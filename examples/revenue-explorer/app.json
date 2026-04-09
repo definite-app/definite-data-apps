@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "name": "Revenue Explorer",
+  "entry": "src/main.tsx",
+  "resources": {
+    "transactions": {
+      "kind": "dataset",
+      "source": {
+        "type": "sql",
+        "sql": "SELECT id AS transactionId, STRFTIME(created_at, '%Y-%m-%d') AS transactionDate, amount::DOUBLE AS amount, branch_name AS branchName, status FROM LAKE.SCHEMA.transactions LIMIT 200000"
+      },
+      "public": false
+    },
+    "branches": {
+      "kind": "json",
+      "source": {
+        "type": "sql",
+        "sql": "SELECT branch_id AS branchId, branch_name AS branchName FROM LAKE.SCHEMA.branches ORDER BY 2 LIMIT 3000"
+      },
+      "public": false
+    }
+  }
+}

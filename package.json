@@ -1,0 +1,14 @@
+{
+  "name": "definite-data-apps",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "preview": "node preview.mjs"
+  },
+  "dependencies": {
+    "esbuild": "0.25.3",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  }
+}

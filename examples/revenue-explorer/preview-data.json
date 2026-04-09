@@ -1,0 +1,33 @@
+{
+  "context": {
+    "publicMode": false,
+    "driveFile": "preview://data-apps-v2/starter",
+    "appVersion": "v2"
+  },
+  "datasets": {
+    "transactions": [
+      { "transactionId": "TXN-1001", "transactionDate": "2026-03-01", "amount": 1250, "branchName": "Austin", "status": "Funded" },
+      { "transactionId": "TXN-1002", "transactionDate": "2026-03-02", "amount": 980, "branchName": "Denver", "status": "Pending" },
+      { "transactionId": "TXN-1003", "transactionDate": "2026-03-03", "amount": 1640, "branchName": "Chicago", "status": "Funded" },
+      { "transactionId": "TXN-1004", "transactionDate": "2026-03-04", "amount": 720, "branchName": "Nashville", "status": "Review" },
+      { "transactionId": "TXN-1005", "transactionDate": "2026-03-05", "amount": 2110, "branchName": "Seattle", "status": "Funded" },
+      { "transactionId": "TXN-1006", "transactionDate": "2026-03-06", "amount": 1435, "branchName": "Austin", "status": "Pending" },
+      { "transactionId": "TXN-1007", "transactionDate": "2026-03-07", "amount": 870, "branchName": "Boston", "status": "Review" },
+      { "transactionId": "TXN-1008", "transactionDate": "2026-03-08", "amount": 1995, "branchName": "Denver", "status": "Funded" },
+      { "transactionId": "TXN-1009", "transactionDate": "2026-03-09", "amount": 1560, "branchName": "Chicago", "status": "Funded" },
+      { "transactionId": "TXN-1010", "transactionDate": "2026-03-10", "amount": 1140, "branchName": "Seattle", "status": "Pending" }
+    ]
+  },
+  "resources": {
+    "branches": [
+      { "branchId": "AUS", "branchName": "Austin" },
+      { "branchId": "BOS", "branchName": "Boston" },
+      { "branchId": "CHI", "branchName": "Chicago" },
+      { "branchId": "DEN", "branchName": "Denver" },
+      { "branchId": "MIA", "branchName": "Miami" },
+      { "branchId": "NSH", "branchName": "Nashville" },
+      { "branchId": "SEA", "branchName": "Seattle" },
+      { "branchId": "SFO", "branchName": "San Francisco" }
+    ]
+  }
+}
