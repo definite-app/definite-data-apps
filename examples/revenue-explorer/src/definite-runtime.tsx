@@ -2758,11 +2758,26 @@ function startOfUnit(d: Date, unit: DateUnit): Date {
 
 function addUnits(d: Date, count: number, unit: DateUnit): Date {
   const x = new Date(d);
-  if (unit === "days") x.setDate(x.getDate() + count);
-  else if (unit === "weeks") x.setDate(x.getDate() + count * 7);
-  else if (unit === "months") x.setMonth(x.getMonth() + count);
-  else if (unit === "quarters") x.setMonth(x.getMonth() + count * 3);
-  else if (unit === "years") x.setFullYear(x.getFullYear() + count);
+  if (unit === "days") {
+    x.setDate(x.getDate() + count);
+    return x;
+  }
+  if (unit === "weeks") {
+    x.setDate(x.getDate() + count * 7);
+    return x;
+  }
+  if (unit === "months" || unit === "quarters" || unit === "years") {
+    // Clamp the day to the target month's last day to avoid JS setMonth/setFullYear
+    // overflow, e.g. Jan 31 + 1 month rolling over to Mar 3.
+    const monthStep = unit === "months" ? count : unit === "quarters" ? count * 3 : count * 12;
+    const targetMonth = x.getMonth() + monthStep;
+    const targetYear = x.getFullYear() + Math.floor(targetMonth / 12);
+    const normalizedMonth = ((targetMonth % 12) + 12) % 12;
+    const lastDay = new Date(targetYear, normalizedMonth + 1, 0).getDate();
+    x.setDate(Math.min(x.getDate(), lastDay));
+    x.setFullYear(targetYear, normalizedMonth);
+    return x;
+  }
   return x;
 }
 
@@ -2893,11 +2908,16 @@ export function DateRangeFilter(props: {
   const [draftCustomFrom, setDraftCustomFrom] = useState(props.value.from || "");
   const [draftCustomTo, setDraftCustomTo] = useState(props.value.to || "");
 
+  // Sync custom-date drafts only on open transition, not on every value change —
+  // otherwise an external onChange while the popover is open would clobber the
+  // user's in-progress edits.
+  const prevOpenRef = useRef(false);
   useEffect(() => {
-    if (open) {
+    if (open && !prevOpenRef.current) {
       setDraftCustomFrom(props.value.from || "");
       setDraftCustomTo(props.value.to || "");
     }
+    prevOpenRef.current = open;
   }, [open, props.value.from, props.value.to]);
 
   const relativePreview = useMemo(
