@@ -2706,6 +2706,7 @@ export type DateRangeValue = {
   from: string;
   to: string;
   label: string;
+  key?: string;
 };
 
 export type DateRangePreset = {
@@ -2836,7 +2837,7 @@ export function makePreset(
     includeCurrent,
     compute: () => {
       const r = computeRelativeRange(mode, n, unit, includeCurrent);
-      return { from: r.from, to: r.to, label };
+      return { from: r.from, to: r.to, label, key };
     },
   };
 }
@@ -2852,7 +2853,7 @@ export const DEFAULT_DATE_RANGE_PRESETS: DateRangePreset[] = [
   makePreset("last12m", "Previous 12 months or this month", "previous", 12, "months", true),
   makePreset("mtd", "Month to date", "current", 1, "months", false),
   makePreset("ytd", "Year to date", "current", 1, "years", false),
-  { key: "all", label: "All time", compute: () => ({ from: "", to: "", label: "All time" }) },
+  { key: "all", label: "All time", compute: () => ({ from: "", to: "", label: "All time", key: "all" }) },
 ];
 
 function DateRangeCalendarIcon({ small }: { small?: boolean } = {}) {
@@ -2915,6 +2916,7 @@ export function DateRangeFilter(props: {
         from: relativePreview.from,
         to: relativePreview.to,
         label: buildRelativeLabel(draftMode, draftN, draftUnit, draftIncludeCurrent),
+        key: "relative",
       });
     } else {
       if (!draftCustomFrom && !draftCustomTo) return;
@@ -2923,7 +2925,7 @@ export function DateRangeFilter(props: {
         : draftCustomFrom
           ? `After ${formatHumanYmd(draftCustomFrom)}`
           : `Before ${formatHumanYmd(draftCustomTo)}`;
-      props.onChange({ from: draftCustomFrom, to: draftCustomTo, label });
+      props.onChange({ from: draftCustomFrom, to: draftCustomTo, label, key: "custom" });
     }
     setOpen(false);
   };
@@ -3001,7 +3003,9 @@ export function DateRangeFilter(props: {
                 Presets
               </div>
               {presets.map((p) => {
-                const active = props.value.label === p.label;
+                const active = props.value.key
+                  ? props.value.key === p.key
+                  : props.value.label === p.label;
                 return (
                   <button
                     key={p.key}
@@ -3087,7 +3091,10 @@ export function DateRangeFilter(props: {
                         type="number"
                         min={1}
                         value={draftN}
-                        onChange={(e) => setDraftN(Math.max(1, parseInt(e.target.value || "1", 10)))}
+                        onChange={(e) => {
+                          const parsed = parseInt(e.target.value, 10);
+                          setDraftN(Number.isFinite(parsed) ? Math.max(1, parsed) : 1);
+                        }}
                         style={{
                           width: 60,
                           padding: "7px 10px",
