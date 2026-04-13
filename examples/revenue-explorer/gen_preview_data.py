@@ -80,10 +80,9 @@ def write_parquet(rows: list[dict]) -> None:
     pq.write_table(table, PARQUET_PATH, compression="zstd")
 
 
-def write_preview_json(rows: list[dict]) -> None:
-    # Reference the parquet file; build.mjs inlines it as base64 at bundle time
+def write_preview_json() -> None:
+    # References the parquet file; build.mjs inlines it as base64 at bundle time
     # so the runtime loads it via DuckDB WASM read_parquet, not JSON parsing.
-    del rows  # unused — rows live in the parquet now
     payload = {
         "context": {
             "publicMode": False,
@@ -117,7 +116,7 @@ def report(rows: list[dict]) -> None:
 def main() -> None:
     rows = gen_rows()
     write_parquet(rows)
-    write_preview_json(rows)
+    write_preview_json()
     report(rows)
 
 
