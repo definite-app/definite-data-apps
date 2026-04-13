@@ -3172,7 +3172,6 @@ export function DateRangeFilter(props: {
                           borderRadius: 6,
                           color: "var(--text-primary)",
                           fontSize: 13,
-                          colorScheme: "dark",
                         }}
                       />
                     </div>
@@ -3190,7 +3189,6 @@ export function DateRangeFilter(props: {
                           borderRadius: 6,
                           color: "var(--text-primary)",
                           fontSize: 13,
-                          colorScheme: "dark",
                         }}
                       />
                     </div>

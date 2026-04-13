@@ -10,8 +10,6 @@ data app has non-trivial data to filter.
 Run: uv run gen_preview_data.py
 """
 
-from __future__ import annotations
-
 import json
 import random
 from datetime import date, timedelta
