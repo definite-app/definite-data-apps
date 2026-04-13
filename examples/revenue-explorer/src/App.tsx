@@ -5,7 +5,9 @@ import {
   Badge,
   Card,
   DataTable,
-  DateInput,
+  DateRangeFilter,
+  DEFAULT_DATE_RANGE_PRESETS,
+  type DateRangeValue,
   EChart,
   ErrorState,
   FilterPills,
@@ -59,7 +61,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [search, setSearch] = useState("");
   const [reportFilter, setReportFilter] = useState("All");
-  const [reportDate, setReportDate] = useState("2026-03-10");
+  const [reportRange, setReportRange] = useState<DateRangeValue>(() =>
+    DEFAULT_DATE_RANGE_PRESETS.find((p) => p.key === "last90")!.compute(),
+  );
   const deferredSearch = useDeferredValue(search);
   const perspective = usePerspective(transactions);
 
@@ -97,6 +101,23 @@ export default function App() {
       ? `SELECT COUNT(*)::INTEGER AS rowCount, COALESCE(SUM(amount), 0)::DOUBLE AS totalAmount, COALESCE(AVG(amount), 0)::DOUBLE AS averageAmount FROM ${transactions.tableRef}${whereClause}`
       : "",
     [whereClause],
+  );
+
+  // Report tab: WHERE clause from date range + segment
+  const reportWhere = useMemo(() => {
+    const clauses: string[] = [];
+    if (reportRange.from) clauses.push(`transactionDate >= '${escapeSql(reportRange.from)}'`);
+    if (reportRange.to) clauses.push(`transactionDate <= '${escapeSql(reportRange.to)}'`);
+    if (reportFilter && reportFilter !== "All") clauses.push(`status = '${escapeSql(reportFilter)}'`);
+    return clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : "";
+  }, [reportRange.from, reportRange.to, reportFilter]);
+
+  const reportAgg = useSqlQuery<Array<{ branchName: string; units: number; volume: number }>>(
+    transactions,
+    transactions.tableRef
+      ? `SELECT branchName, COUNT(*)::INTEGER AS units, COALESCE(SUM(amount), 0)::DOUBLE AS volume FROM ${transactions.tableRef}${reportWhere} GROUP BY branchName ORDER BY branchName`
+      : "",
+    [reportWhere],
   );
 
   // Filtered recent rows
@@ -348,13 +369,7 @@ export default function App() {
               value={reportFilter}
               onChange={setReportFilter}
             />
-            <DateInput
-              label="As of date"
-              value={reportDate}
-              onChange={setReportDate}
-              max="2026-03-31"
-              min="2026-01-01"
-            />
+            <DateRangeFilter value={reportRange} onChange={setReportRange} />
           </div>
 
           <Card>
@@ -366,122 +381,55 @@ export default function App() {
                   color: "var(--bg-elevated)",
                 },
                 {
-                  label: "Prior Day",
-                  color: "#b45309",
-                  subHeaders: [
-                    { key: "pdUnits", label: "Units" },
-                    { key: "pdVolume", label: "Volume" },
-                  ],
-                },
-                {
-                  label: "Month to Date",
+                  label: reportRange.label || "Range",
                   color: "#92400e",
                   subHeaders: [
-                    { key: "mtdUnits", label: "Units" },
-                    { key: "mtdVolume", label: "Volume" },
-                  ],
-                },
-                {
-                  label: "vs Target",
-                  color: "#78350f",
-                  subHeaders: [
-                    { key: "target", label: "Target" },
-                    { key: "variance", label: "Variance" },
+                    { key: "units", label: "Units" },
+                    { key: "volume", label: "Volume" },
                   ],
                 },
               ]}
-              rows={[
-                { type: "section", cells: { category: "Branches" } },
-                {
-                  type: "data",
+              rows={(() => {
+                const data = reportAgg.data ?? [];
+                const fmtMoney = (v: number) => `$${Math.round(v).toLocaleString()}`;
+                const branchRows = data.map((r) => ({
+                  type: "data" as const,
                   indent: true,
                   cells: {
-                    category: "Austin",
-                    pdUnits: "3",
-                    pdVolume: "$1,250",
-                    mtdUnits: "28",
-                    mtdVolume: "$34,500",
-                    target: "$30,000",
-                    variance: { value: "+$4,500", color: "#4ade80" },
+                    category: r.branchName,
+                    units: String(r.units),
+                    volume: fmtMoney(r.volume),
                   },
-                },
-                {
-                  type: "data",
-                  indent: true,
-                  cells: {
-                    category: "Denver",
-                    pdUnits: "2",
-                    pdVolume: "$980",
-                    mtdUnits: "19",
-                    mtdVolume: "$22,100",
-                    target: "$25,000",
-                    variance: { value: "-$2,900", color: "#f87171" },
+                }));
+                const totalUnits = data.reduce((s, r) => s + Number(r.units || 0), 0);
+                const totalVolume = data.reduce((s, r) => s + Number(r.volume || 0), 0);
+                if (branchRows.length === 0) {
+                  return [
+                    { type: "section" as const, cells: { category: "Branches" } },
+                    {
+                      type: "data" as const,
+                      indent: true,
+                      cells: {
+                        category: reportAgg.loading ? "Loading..." : "No transactions in range",
+                        units: "—",
+                        volume: "—",
+                      },
+                    },
+                  ];
+                }
+                return [
+                  { type: "section" as const, cells: { category: "Branches" } },
+                  ...branchRows,
+                  {
+                    type: "total" as const,
+                    cells: {
+                      category: "GRAND TOTAL",
+                      units: String(totalUnits),
+                      volume: fmtMoney(totalVolume),
+                    },
                   },
-                },
-                {
-                  type: "data",
-                  indent: true,
-                  cells: {
-                    category: "Chicago",
-                    pdUnits: "5",
-                    pdVolume: "$3,200",
-                    mtdUnits: "42",
-                    mtdVolume: "$51,800",
-                    target: "$45,000",
-                    variance: { value: "+$6,800", color: "#4ade80" },
-                  },
-                },
-                {
-                  type: "subtotal",
-                  cells: {
-                    category: "Total Branches",
-                    pdUnits: "10",
-                    pdVolume: "$5,430",
-                    mtdUnits: "89",
-                    mtdVolume: "$108,400",
-                    target: "$100,000",
-                    variance: { value: "+$8,400", color: "#4ade80", bold: true },
-                  },
-                },
-                { type: "section", cells: { category: "Online" } },
-                {
-                  type: "data",
-                  indent: true,
-                  cells: {
-                    category: "Direct",
-                    pdUnits: "8",
-                    pdVolume: "$6,100",
-                    mtdUnits: "67",
-                    mtdVolume: "$72,300",
-                    target: "$80,000",
-                    variance: { value: "-$7,700", color: "#f87171" },
-                  },
-                },
-                {
-                  type: "subtotal",
-                  cells: {
-                    category: "Total Online",
-                    pdUnits: "8",
-                    pdVolume: "$6,100",
-                    mtdUnits: "67",
-                    mtdVolume: "$72,300",
-                    target: "$80,000",
-                    variance: { value: "-$7,700", color: "#f87171", bold: true },
-                  },
-                },
-                {
-                  type: "total",
-                  cells: {
-                    category: "GRAND TOTAL",
-                    pdUnits: "18",
-                    pdVolume: "$11,530",
-                    mtdUnits: "156",
-                    mtdVolume: "$180,700",
-                    target: "$180,000",
-                    variance: { value: "+$700", color: "#4ade80", bold: true },
-                  },
-                },
-              ]}
+                ];
+              })()}
             />
           </Card>
 

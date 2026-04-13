@@ -193,19 +193,38 @@ function getPreviewBridge(): DefiniteBridge | null {
   previewBridgeCache = {
     async loadDataset({ key }) {
       const data = previewData.datasets?.[key];
-      if (!Array.isArray(data)) {
+      if (data === undefined || data === null) {
         throw new Error(`Preview dataset ${key} is missing`);
       }
-      return {
-        key,
-        kind: "dataset",
-        resolvedMode: "snapshot",
-        source: { type: "preview" },
-        snapshot: { format: "json" },
-        downloadUrl: null,
-        manifestVersion: 2,
-        payload: { type: "json", data: normalizeRows(data) },
-      };
+      if (Array.isArray(data)) {
+        return {
+          key,
+          kind: "dataset",
+          resolvedMode: "snapshot",
+          source: { type: "preview" },
+          snapshot: { format: "json" },
+          downloadUrl: null,
+          manifestVersion: 2,
+          payload: { type: "json", data: normalizeRows(data) },
+        };
+      }
+      if (typeof data === "object" && "base64" in data && typeof (data as { base64: unknown }).base64 === "string") {
+        const { format, base64 } = data as { format?: "parquet" | "duckdb"; base64: string };
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        return {
+          key,
+          kind: "dataset",
+          resolvedMode: "snapshot",
+          source: { type: "preview" },
+          snapshot: { format: format ?? "parquet" },
+          downloadUrl: null,
+          manifestVersion: 2,
+          payload: { type: "binary-buffer", buffer: bytes.buffer, format: format ?? "parquet" },
+        };
+      }
+      throw new Error(`Preview dataset ${key} is not a row array or binary payload`);
     },
     async loadResource({ key }) {
       const data = previewData.resources?.[key];
@@ -2679,6 +2698,557 @@ export function FilterPills(props: {
     </div>
   );
 }
+
+export type DateMode = "previous" | "current" | "next";
+export type DateUnit = "days" | "weeks" | "months" | "quarters" | "years";
+
+export type DateRangeValue = {
+  from: string;
+  to: string;
+  label: string;
+  key?: string;
+};
+
+export type DateRangePreset = {
+  key: string;
+  label: string;
+  mode?: DateMode;
+  n?: number;
+  unit?: DateUnit;
+  includeCurrent?: boolean;
+  compute: () => DateRangeValue;
+};
+
+function formatYmd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function formatHumanYmd(ymd: string): string {
+  if (!ymd) return "";
+  const [y, m, d] = ymd.split("-").map(Number);
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${MONTHS[m - 1]} ${d}, ${y}`;
+}
+
+function startOfUnit(d: Date, unit: DateUnit): Date {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  if (unit === "days") return x;
+  if (unit === "weeks") {
+    x.setDate(x.getDate() - x.getDay());
+    return x;
+  }
+  if (unit === "months") {
+    x.setDate(1);
+    return x;
+  }
+  if (unit === "quarters") {
+    const q = Math.floor(x.getMonth() / 3);
+    x.setMonth(q * 3);
+    x.setDate(1);
+    return x;
+  }
+  if (unit === "years") {
+    x.setMonth(0);
+    x.setDate(1);
+    return x;
+  }
+  return x;
+}
+
+function addUnits(d: Date, count: number, unit: DateUnit): Date {
+  const x = new Date(d);
+  if (unit === "days") {
+    x.setDate(x.getDate() + count);
+    return x;
+  }
+  if (unit === "weeks") {
+    x.setDate(x.getDate() + count * 7);
+    return x;
+  }
+  if (unit === "months" || unit === "quarters" || unit === "years") {
+    // Clamp the day to the target month's last day to avoid JS setMonth/setFullYear
+    // overflow, e.g. Jan 31 + 1 month rolling over to Mar 3.
+    const monthStep = unit === "months" ? count : unit === "quarters" ? count * 3 : count * 12;
+    const targetMonth = x.getMonth() + monthStep;
+    const targetYear = x.getFullYear() + Math.floor(targetMonth / 12);
+    const normalizedMonth = ((targetMonth % 12) + 12) % 12;
+    const lastDay = new Date(targetYear, normalizedMonth + 1, 0).getDate();
+    x.setDate(Math.min(x.getDate(), lastDay));
+    x.setFullYear(targetYear, normalizedMonth);
+    return x;
+  }
+  return x;
+}
+
+function endOfUnit(d: Date, unit: DateUnit): Date {
+  const next = addUnits(startOfUnit(d, unit), 1, unit);
+  next.setDate(next.getDate() - 1);
+  return next;
+}
+
+export function computeRelativeRange(
+  mode: DateMode,
+  n: number,
+  unit: DateUnit,
+  includeCurrent: boolean,
+  today: Date = new Date(),
+): { from: string; to: string } {
+  let from: Date;
+  let to: Date;
+  if (mode === "current") {
+    from = startOfUnit(today, unit);
+    to = unit === "days" ? new Date(today) : endOfUnit(today, unit);
+  } else if (mode === "previous") {
+    if (includeCurrent) {
+      from = startOfUnit(addUnits(today, -(n - 1), unit), unit);
+      to = unit === "days" ? new Date(today) : endOfUnit(today, unit);
+    } else {
+      from = startOfUnit(addUnits(today, -n, unit), unit);
+      to = unit === "days" ? addUnits(today, -1, "days") : endOfUnit(addUnits(today, -1, unit), unit);
+    }
+  } else {
+    if (includeCurrent) {
+      from = startOfUnit(today, unit);
+      to = unit === "days"
+        ? addUnits(today, n - 1, "days")
+        : endOfUnit(addUnits(today, n - 1, unit), unit);
+    } else {
+      from = startOfUnit(addUnits(today, 1, unit), unit);
+      to = unit === "days"
+        ? addUnits(today, n, "days")
+        : endOfUnit(addUnits(today, n, unit), unit);
+    }
+  }
+  return { from: formatYmd(from), to: formatYmd(to) };
+}
+
+export function buildRelativeLabel(mode: DateMode, n: number, unit: DateUnit, includeCurrent: boolean): string {
+  const singular = unit.replace(/s$/, "");
+  const plural = n === 1 ? singular : unit;
+  if (mode === "current") return `This ${singular}`;
+  if (mode === "previous") {
+    const base = `Previous ${n} ${plural}`;
+    return includeCurrent ? `${base} or this ${singular}` : base;
+  }
+  const baseN = `Next ${n} ${plural}`;
+  return includeCurrent ? `${baseN} or this ${singular}` : baseN;
+}
+
+export function makePreset(
+  key: string,
+  label: string,
+  mode: DateMode,
+  n: number,
+  unit: DateUnit,
+  includeCurrent: boolean,
+): DateRangePreset {
+  return {
+    key,
+    label,
+    mode,
+    n,
+    unit,
+    includeCurrent,
+    compute: () => {
+      const r = computeRelativeRange(mode, n, unit, includeCurrent);
+      return { from: r.from, to: r.to, label, key };
+    },
+  };
+}
+
+export const DEFAULT_DATE_RANGE_PRESETS: DateRangePreset[] = [
+  makePreset("today", "Today", "current", 1, "days", false),
+  makePreset("yesterday", "Yesterday", "previous", 1, "days", false),
+  makePreset("last7", "Last 7 days", "previous", 7, "days", true),
+  makePreset("last30", "Last 30 days", "previous", 30, "days", true),
+  makePreset("last90", "Last 90 days", "previous", 90, "days", true),
+  makePreset("last3m", "Last 3 months", "previous", 3, "months", true),
+  makePreset("last6m", "Last 6 months", "previous", 6, "months", true),
+  makePreset("last12m", "Previous 12 months or this month", "previous", 12, "months", true),
+  makePreset("mtd", "Month to date", "current", 1, "months", false),
+  makePreset("ytd", "Year to date", "current", 1, "years", false),
+  { key: "all", label: "All time", compute: () => ({ from: "", to: "", label: "All time", key: "all" }) },
+];
+
+function DateRangeCalendarIcon({ small }: { small?: boolean } = {}) {
+  const s = small ? 12 : 14;
+  return (
+    <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+      <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+      <line x1="16" y1="2" x2="16" y2="6" />
+      <line x1="8" y1="2" x2="8" y2="6" />
+      <line x1="3" y1="10" x2="21" y2="10" />
+    </svg>
+  );
+}
+
+function DateRangeChevronIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.6 }}>
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
+
+export function DateRangeFilter(props: {
+  value: DateRangeValue;
+  onChange: (v: DateRangeValue) => void;
+  label?: React.ReactNode;
+  presets?: DateRangePreset[];
+  className?: string;
+}) {
+  const presets = props.presets ?? DEFAULT_DATE_RANGE_PRESETS;
+  const [open, setOpen] = useState(false);
+  const [mainTab, setMainTab] = useState<"relative" | "custom">("relative");
+  const [draftMode, setDraftMode] = useState<"previous" | "next">("previous");
+  const [draftN, setDraftN] = useState(12);
+  const [draftUnit, setDraftUnit] = useState<DateUnit>("months");
+  const [draftIncludeCurrent, setDraftIncludeCurrent] = useState(true);
+  const [draftCustomFrom, setDraftCustomFrom] = useState(props.value.from || "");
+  const [draftCustomTo, setDraftCustomTo] = useState(props.value.to || "");
+
+  // Sync custom-date drafts only on open transition, not on every value change —
+  // otherwise an external onChange while the popover is open would clobber the
+  // user's in-progress edits.
+  const prevOpenRef = useRef(false);
+  useEffect(() => {
+    if (open && !prevOpenRef.current) {
+      setDraftCustomFrom(props.value.from || "");
+      setDraftCustomTo(props.value.to || "");
+    }
+    prevOpenRef.current = open;
+  }, [open, props.value.from, props.value.to]);
+
+  const relativePreview = useMemo(
+    () => computeRelativeRange(draftMode, draftN, draftUnit, draftIncludeCurrent),
+    [draftMode, draftN, draftUnit, draftIncludeCurrent],
+  );
+
+  const previewFrom = mainTab === "relative" ? relativePreview.from : draftCustomFrom;
+  const previewTo = mainTab === "relative" ? relativePreview.to : draftCustomTo;
+
+  const canApply = mainTab === "relative" ? draftN > 0 : !!(draftCustomFrom || draftCustomTo);
+
+  const applyActive = () => {
+    if (mainTab === "relative") {
+      props.onChange({
+        from: relativePreview.from,
+        to: relativePreview.to,
+        label: buildRelativeLabel(draftMode, draftN, draftUnit, draftIncludeCurrent),
+        key: "relative",
+      });
+    } else {
+      if (!draftCustomFrom && !draftCustomTo) return;
+      const label = draftCustomFrom && draftCustomTo
+        ? `${formatHumanYmd(draftCustomFrom)} → ${formatHumanYmd(draftCustomTo)}`
+        : draftCustomFrom
+          ? `After ${formatHumanYmd(draftCustomFrom)}`
+          : `Before ${formatHumanYmd(draftCustomTo)}`;
+      props.onChange({ from: draftCustomFrom, to: draftCustomTo, label, key: "custom" });
+    }
+    setOpen(false);
+  };
+
+  const applyPreset = (p: DateRangePreset) => {
+    props.onChange(p.compute());
+    if (p.mode && p.mode !== "current") setDraftMode(p.mode);
+    if (typeof p.n === "number") setDraftN(p.n);
+    if (p.unit) setDraftUnit(p.unit);
+    if (typeof p.includeCurrent === "boolean") setDraftIncludeCurrent(p.includeCurrent);
+    if (p.mode && p.mode !== "current") setMainTab("relative");
+    setOpen(false);
+  };
+
+  return (
+    <div className={props.className} style={{ position: "relative" }}>
+      {props.label !== null ? (
+        <div
+          className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.06em]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          {props.label ?? "Date Range"}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--border-hover)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "8px 12px",
+          background: "var(--bg-card)",
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          color: "var(--text-primary)",
+          fontSize: 13,
+          cursor: "pointer",
+          minWidth: 200,
+          fontWeight: 500,
+        }}
+      >
+        <DateRangeCalendarIcon />
+        <span style={{ flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {props.value.label || "Select date range"}
+        </span>
+        <DateRangeChevronIcon />
+      </button>
+
+      {open ? (
+        <>
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 9998 }}
+            onClick={() => setOpen(false)}
+          />
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(100% + 6px)",
+              left: 0,
+              zIndex: 9999,
+              width: 560,
+              background: "var(--bg-card)",
+              border: "1px solid var(--border)",
+              borderRadius: 12,
+              boxShadow: "0 20px 40px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--border)",
+              display: "grid",
+              gridTemplateColumns: "160px 1fr",
+              overflow: "hidden",
+            }}
+          >
+            <div style={{ background: "var(--bg-elevated)", padding: 8, borderRight: "1px solid var(--border)" }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", padding: "6px 10px 10px", letterSpacing: 0.5 }}>
+                Presets
+              </div>
+              {presets.map((p) => {
+                const active = props.value.key
+                  ? props.value.key === p.key
+                  : props.value.label === p.label;
+                return (
+                  <button
+                    key={p.key}
+                    type="button"
+                    onClick={() => applyPreset(p)}
+                    onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                    onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "7px 10px",
+                      borderRadius: 6,
+                      background: active ? "var(--accent-muted)" : "transparent",
+                      color: active ? "var(--accent-strong)" : "var(--text-primary)",
+                      border: "none",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      fontWeight: active ? 600 : 400,
+                      marginBottom: 2,
+                    }}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div style={{ padding: 16, display: "flex", flexDirection: "column" }}>
+              <div style={{ display: "flex", gap: 2, borderBottom: "1px solid var(--border)", marginBottom: 16 }}>
+                {(["relative", "custom"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setMainTab(tab)}
+                    style={{
+                      padding: "8px 14px",
+                      background: "none",
+                      border: "none",
+                      borderBottom: mainTab === tab ? "2px solid var(--accent)" : "2px solid transparent",
+                      color: mainTab === tab ? "var(--text-primary)" : "var(--text-muted)",
+                      fontSize: 13,
+                      fontWeight: 500,
+                      cursor: "pointer",
+                      textTransform: "capitalize",
+                      marginBottom: -1,
+                    }}
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ flex: 1 }}>
+                {mainTab === "relative" ? (
+                  <>
+                    <div style={{ display: "flex", gap: 4, padding: 2, background: "var(--bg-elevated)", borderRadius: 8, marginBottom: 12 }}>
+                      {(["previous", "next"] as const).map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => setDraftMode(m)}
+                          style={{
+                            flex: 1,
+                            padding: "6px 10px",
+                            border: "none",
+                            borderRadius: 6,
+                            fontSize: 12,
+                            fontWeight: 500,
+                            cursor: "pointer",
+                            background: draftMode === m ? "var(--bg-card)" : "transparent",
+                            color: draftMode === m ? "var(--text-primary)" : "var(--text-muted)",
+                            textTransform: "capitalize",
+                          }}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <input
+                        type="number"
+                        min={1}
+                        value={draftN}
+                        onChange={(e) => {
+                          const parsed = parseInt(e.target.value, 10);
+                          setDraftN(Number.isFinite(parsed) ? Math.max(1, parsed) : 1);
+                        }}
+                        style={{
+                          width: 60,
+                          padding: "7px 10px",
+                          background: "var(--bg-elevated)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 6,
+                          color: "var(--text-primary)",
+                          fontSize: 13,
+                        }}
+                      />
+                      <select
+                        value={draftUnit}
+                        onChange={(e) => setDraftUnit(e.target.value as DateUnit)}
+                        style={{
+                          flex: 1,
+                          padding: "7px 10px",
+                          background: "var(--bg-elevated)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 6,
+                          color: "var(--text-primary)",
+                          fontSize: 13,
+                        }}
+                      >
+                        <option value="days">days</option>
+                        <option value="weeks">weeks</option>
+                        <option value="months">months</option>
+                        <option value="quarters">quarters</option>
+                        <option value="years">years</option>
+                      </select>
+                    </div>
+
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)", marginBottom: 4, cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={draftIncludeCurrent}
+                        onChange={(e) => setDraftIncludeCurrent(e.target.checked)}
+                      />
+                      Include this {draftUnit.replace(/s$/, "")}
+                    </label>
+                  </>
+                ) : (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>From</div>
+                      <input
+                        type="date"
+                        value={draftCustomFrom}
+                        onChange={(e) => setDraftCustomFrom(e.target.value)}
+                        style={{
+                          width: "100%",
+                          padding: "7px 10px",
+                          background: "var(--bg-elevated)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 6,
+                          color: "var(--text-primary)",
+                          fontSize: 13,
+                        }}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>To</div>
+                      <input
+                        type="date"
+                        value={draftCustomTo}
+                        onChange={(e) => setDraftCustomTo(e.target.value)}
+                        style={{
+                          width: "100%",
+                          padding: "7px 10px",
+                          background: "var(--bg-elevated)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 6,
+                          color: "var(--text-primary)",
+                          fontSize: 13,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ padding: "8px 12px", background: "var(--bg-elevated)", borderRadius: 6, fontSize: 12, color: "var(--text-secondary)", margin: "16px 0 12px", display: "flex", alignItems: "center" }}>
+                <DateRangeCalendarIcon small />
+                <span style={{ marginLeft: 6 }}>
+                  {previewFrom ? formatHumanYmd(previewFrom) : "—"} → {previewTo ? formatHumanYmd(previewTo) : "—"}
+                </span>
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  style={{
+                    flex: 1,
+                    padding: "8px 14px",
+                    background: "transparent",
+                    color: "var(--text-secondary)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 6,
+                    fontSize: 13,
+                    fontWeight: 500,
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={applyActive}
+                  disabled={!canApply}
+                  style={{
+                    flex: 1,
+                    padding: "8px 14px",
+                    background: canApply ? "var(--accent)" : "var(--bg-elevated)",
+                    color: canApply ? "white" : "var(--text-muted)",
+                    border: "none",
+                    borderRadius: 6,
+                    fontSize: 13,
+                    fontWeight: 500,
+                    cursor: canApply ? "pointer" : "not-allowed",
+                  }}
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+
 
 export function DateInput(props: {
   value: string;
