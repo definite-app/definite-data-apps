@@ -175,6 +175,20 @@ const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 validateManifest(manifest, manifestPath);
 await validateResourceHookUsage(appDir, manifest);
 const previewData = previewDataPath ? JSON.parse(await readFile(previewDataPath, "utf8")) : null;
+if (previewData?.datasets) {
+  const previewBaseDir = path.dirname(previewDataPath);
+  for (const [key, value] of Object.entries(previewData.datasets)) {
+    if (value && typeof value === "object" && !Array.isArray(value) && typeof value.file === "string") {
+      const filePath = path.resolve(previewBaseDir, value.file);
+      const bytes = await readFile(filePath);
+      const format = value.format ?? (filePath.endsWith(".duckdb") ? "duckdb" : "parquet");
+      previewData.datasets[key] = {
+        format,
+        base64: bytes.toString("base64"),
+      };
+    }
+  }
+}
 
 const entry = path.join(appDir, manifest.entry ?? "src/main.tsx");
 const outDir = path.join(appDir, "dist");
