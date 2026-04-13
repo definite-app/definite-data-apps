@@ -5,7 +5,6 @@ import {
   Badge,
   Card,
   DataTable,
-  DateInput,
   DateRangeFilter,
   DEFAULT_DATE_RANGE_PRESETS,
   type DateRangeValue,
@@ -62,7 +61,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [search, setSearch] = useState("");
   const [reportFilter, setReportFilter] = useState("All");
-  const [reportDate, setReportDate] = useState("2026-03-10");
   const [reportRange, setReportRange] = useState<DateRangeValue>(() =>
     DEFAULT_DATE_RANGE_PRESETS.find((p) => p.key === "last90")!.compute(),
   );
@@ -372,13 +370,6 @@ export default function App() {
               onChange={setReportFilter}
             />
             <DateRangeFilter value={reportRange} onChange={setReportRange} />
-            <DateInput
-              label="As of date"
-              value={reportDate}
-              onChange={setReportDate}
-              max="2026-03-31"
-              min="2026-01-01"
-            />
           </div>
 
           <Card>

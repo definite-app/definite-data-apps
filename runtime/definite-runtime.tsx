@@ -2936,7 +2936,7 @@ export function DateRangeFilter(props: {
     if (typeof p.n === "number") setDraftN(p.n);
     if (p.unit) setDraftUnit(p.unit);
     if (typeof p.includeCurrent === "boolean") setDraftIncludeCurrent(p.includeCurrent);
-    if (p.mode) setMainTab("relative");
+    if (p.mode && p.mode !== "current") setMainTab("relative");
     setOpen(false);
   };
 
