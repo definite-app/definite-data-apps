@@ -9,7 +9,7 @@ import {
   DataTable,
   LoadingState,
   ErrorState,
-} from "./definite-runtime";
+} from "@definite/runtime";
 
 export default function App() {
   const theme = useTheme();

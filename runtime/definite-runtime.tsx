@@ -109,6 +109,10 @@ const PERSPECTIVE_VIEWER_DATAGRID_URL = "https://cdn.jsdelivr.net/npm/@perspecti
 const PERSPECTIVE_VIEWER_D3FC_URL = "https://cdn.jsdelivr.net/npm/@perspective-dev/viewer-d3fc@4.3.0/dist/cdn/perspective-viewer-d3fc.js";
 const PERSPECTIVE_CLIENT_URL = "https://cdn.jsdelivr.net/npm/@perspective-dev/client@4.3.0/dist/cdn/perspective.js";
 const PERSPECTIVE_DUCKDB_HANDLER_URL = "https://cdn.jsdelivr.net/npm/@perspective-dev/client@4.3.0/dist/esm/virtual_servers/duckdb.js";
+// IndexedDB name stays as "data-apps-v2-cache" even after the data-apps-v2 → data-apps
+// namespace rename. Changing it would invalidate every deployed data app's local cache
+// and force a cold reload against DuckLake on next open. Not worth the cost for a string
+// that never appears in the UI.
 const CACHE_DB = "data-apps-v2-cache";
 const CACHE_STORE = "resources";
 const CACHE_TTL = 24 * 60 * 60 * 1000;
@@ -122,10 +126,125 @@ let cacheDbPromise: Promise<IDBDatabase> | null = null;
 let previewBridgeCache: DefiniteBridge | null | undefined;
 const jsonResourceCache = new Map<string, { value: unknown; cache: ResourceCacheDetails }>();
 let embeddedManifestCache: Record<string, unknown> | null | undefined;
+let embeddedBridgeCache: DefiniteBridge | null | undefined;
+
+function getEmbedContext(): { token: string; driveFile: string } | null {
+  // Injected by the Definite embed route before the app script runs.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const embed = (window as any).__DEFINITE_EMBED;
+  if (!embed || typeof embed !== "object") {
+    return null;
+  }
+  const token = typeof embed.token === "string" ? embed.token : null;
+  const driveFile = typeof embed.driveFile === "string" ? embed.driveFile : null;
+  if (!token || !driveFile) {
+    return null;
+  }
+  return { token, driveFile };
+}
+
+function getApiBase(): string {
+  // Same origin as the embed HTML; resolves to api.definite.app (or staging)
+  // when the app was served via /v4/data-apps/embed. Local dev: window.location.origin.
+  return window.location.origin;
+}
+
+async function queryEmbeddedResource(
+  key: string,
+  ctx: { token: string; driveFile: string },
+): Promise<ResolvedResource> {
+  const resp = await fetch(`${getApiBase()}/v4/data-apps/query`, {
+    method: "POST",
+    credentials: "omit",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${ctx.token}`,
+    },
+    body: JSON.stringify({ drive_file: ctx.driveFile, resource_key: key }),
+  });
+
+  if (!resp.ok) {
+    let message = `data-apps /query failed: ${resp.status} ${resp.statusText}`;
+    try {
+      const text = await resp.text();
+      if (text) {
+        message += `: ${text}`;
+      }
+    }
+    catch {
+      // ignore
+    }
+    throw new Error(message);
+  }
+
+  const contentType = resp.headers.get("content-type") ?? "";
+  if (contentType.includes("arrow")) {
+    const buffer = await resp.arrayBuffer();
+    return {
+      key,
+      kind: "dataset",
+      resolvedMode: "live",
+      source: { type: "sql", embedded: true },
+      snapshot: null,
+      downloadUrl: null,
+      manifestVersion: 2,
+      payload: { type: "arrow-buffer", buffer },
+    };
+  }
+
+  const json = await resp.json();
+  return {
+    key,
+    kind: "dataset",
+    resolvedMode: "live",
+    source: { type: "cube", embedded: true },
+    snapshot: null,
+    downloadUrl: null,
+    manifestVersion: 2,
+    payload: { type: "json", data: Array.isArray(json) ? json : (json?.data ?? []) },
+  };
+}
+
+function getEmbeddedBridge(): DefiniteBridge | null {
+  if (embeddedBridgeCache !== undefined) {
+    return embeddedBridgeCache;
+  }
+  const ctx = getEmbedContext();
+  if (!ctx) {
+    embeddedBridgeCache = null;
+    return embeddedBridgeCache;
+  }
+
+  embeddedBridgeCache = {
+    async loadDataset({ key }) {
+      return await queryEmbeddedResource(key, ctx);
+    },
+    async loadResource({ key }) {
+      const resolved = await queryEmbeddedResource(key, ctx);
+      return { ...resolved, kind: "json" };
+    },
+    async getContext() {
+      return {
+        publicMode: false,
+        driveFile: ctx.driveFile,
+        appVersion: "v2",
+      } satisfies DefiniteContext;
+    },
+    reportError(error) {
+      console.error("[data-apps embedded]", error);
+    },
+  };
+
+  return embeddedBridgeCache;
+}
 
 function getBridge(): DefiniteBridge {
   if (window.Definite) {
     return window.Definite;
+  }
+  const embeddedBridge = getEmbeddedBridge();
+  if (embeddedBridge) {
+    return embeddedBridge;
   }
   const previewBridge = getPreviewBridge();
   if (previewBridge) {
@@ -390,6 +509,51 @@ async function deleteCachedValue(cacheKey: string): Promise<void> {
     // Ignore cache deletion failures in sandboxed iframes.
   }
 }
+
+// Global event target for signaling cache clears to mounted hooks.
+const cacheInvalidationBus = new EventTarget();
+let clearInFlight = false;
+
+async function clearAllCache(): Promise<void> {
+  if (clearInFlight) return;
+  clearInFlight = true;
+  try {
+    try {
+      if (cacheDbPromise) {
+        const db = await cacheDbPromise;
+        db.close();
+      }
+    }
+    catch { /* best effort */ }
+    cacheDbPromise = null;
+
+    await new Promise<void>((resolve) => {
+      try {
+        const req = indexedDB.deleteDatabase(CACHE_DB);
+        req.onsuccess = () => resolve();
+        req.onerror = () => resolve();
+        req.onblocked = () => {
+          console.warn("[definite-runtime] IndexedDB delete blocked — proceeding anyway");
+          resolve();
+        };
+      }
+      catch { resolve(); }
+    });
+
+    jsonResourceCache.clear();
+    embeddedManifestCache = undefined;
+
+    cacheInvalidationBus.dispatchEvent(new Event("clear"));
+  }
+  finally {
+    clearInFlight = false;
+  }
+}
+
+// Listen for the bridge-forwarded event from the parent
+window.addEventListener("definite:clear-cache", () => {
+  void clearAllCache();
+});
 
 async function importModule<T>(url: string): Promise<T> {
   return await import(/* @vite-ignore */ url) as T;
@@ -1059,8 +1223,12 @@ export function useDataset(key: string, opts?: { mode?: DataAppMode }): DatasetH
     };
 
     void load(false);
+
+    const onClear = () => { void load(true); };
+    cacheInvalidationBus.addEventListener("clear", onClear);
     return () => {
       cancelled = true;
+      cacheInvalidationBus.removeEventListener("clear", onClear);
     };
   }, [key, mode]);
 
@@ -1110,8 +1278,12 @@ export function useJsonResource<T = unknown>(key: string, opts?: { mode?: DataAp
     };
 
     void load(false);
+
+    const onClear = () => { void load(true); };
+    cacheInvalidationBus.addEventListener("clear", onClear);
     return () => {
       cancelled = true;
+      cacheInvalidationBus.removeEventListener("clear", onClear);
     };
   }, [key, mode]);
 
@@ -2693,7 +2865,9 @@ export function EChart(props: {
     instanceRef.current = instance;
 
     try {
-      instance.setOption(JSON.parse(serializedOption), true);
+      const opt = JSON.parse(serializedOption);
+      if (!opt.backgroundColor) opt.backgroundColor = "transparent";
+      instance.setOption(opt, true);
     } catch (e) {
       console.error("[EChart] setOption failed", e);
     }
@@ -2716,7 +2890,9 @@ export function EChart(props: {
   useEffect(() => {
     if (!instanceRef.current) return;
     try {
-      instanceRef.current.setOption(JSON.parse(serializedOption), true);
+      const opt = JSON.parse(serializedOption);
+      if (!opt.backgroundColor) opt.backgroundColor = "transparent";
+      instanceRef.current.setOption(opt, true);
     } catch (e) {
       console.error("[EChart] setOption update failed", e);
     }
