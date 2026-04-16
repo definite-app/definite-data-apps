@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: npm install --no-fund --no-audit
+
+      - name: Build revenue-explorer example
+        run: node build.mjs examples/revenue-explorer
+
+      - name: Build blank template
+        run: node build.mjs templates/blank
+
+      - name: Build from external app dir (Fi scenario)
+        run: |
+          mkdir -p /tmp/external-app
+          cp -RL starter/. /tmp/external-app/
+          node build.mjs /tmp/external-app
+
+      - name: Embed-token placeholder present in embedded HTML
+        run: grep -q '__definite_embed_token' examples/revenue-explorer/dist/index.embedded.html
+
+      - name: Embed-token placeholder absent from regular HTML
+        run: |
+          if grep -q '__definite_embed_token' examples/revenue-explorer/dist/index.html; then
+            echo "regular index.html unexpectedly contains the embed-token placeholder"
+            exit 1
+          fi
+
+      - name: Preview build works
+        run: node preview.mjs revenue-explorer
