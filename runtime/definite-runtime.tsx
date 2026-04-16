@@ -2017,10 +2017,42 @@ export function DataTable(props: {
   rows: Array<Record<string, unknown>>;
   emptyState?: string;
   pageSize?: number;
+  sortable?: boolean;
 }) {
   const [page, setPage] = useState(1);
+  const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" } | null>(null);
 
-  const total = props.rows.length;
+  const sortedRows = useMemo(() => {
+    if (!props.sortable || !sort) return props.rows;
+    const { key, dir } = sort;
+    const isNumericColumn = props.rows.slice(0, 50).every((row) => {
+      const v = row[key];
+      if (v == null || v === "") return true;
+      const n = typeof v === "number" ? v : Number(v);
+      return Number.isFinite(n);
+    });
+    const copy = props.rows.slice();
+    copy.sort((a, b) => {
+      const av = a[key];
+      const bv = b[key];
+      const aNull = av == null || av === "";
+      const bNull = bv == null || bv === "";
+      if (aNull && bNull) return 0;
+      if (aNull) return 1;
+      if (bNull) return -1;
+      if (isNumericColumn) {
+        const an = typeof av === "number" ? av : Number(av);
+        const bn = typeof bv === "number" ? bv : Number(bv);
+        return dir === "asc" ? an - bn : bn - an;
+      }
+      const as = String(av);
+      const bs = String(bv);
+      return dir === "asc" ? as.localeCompare(bs) : bs.localeCompare(as);
+    });
+    return copy;
+  }, [props.rows, props.sortable, sort]);
+
+  const total = sortedRows.length;
   const paginated = props.pageSize != null && props.pageSize > 0;
   const pageSize = paginated ? (props.pageSize as number) : total;
   const pageCount = paginated ? Math.max(1, Math.ceil(total / pageSize)) : 1;
@@ -2042,7 +2074,7 @@ export function DataTable(props: {
 
   const start = paginated ? (page - 1) * pageSize : 0;
   const end = paginated ? Math.min(start + pageSize, total) : total;
-  const visibleRows = paginated ? props.rows.slice(start, end) : props.rows;
+  const visibleRows = paginated ? sortedRows.slice(start, end) : sortedRows;
 
   const Chevron = ({ dir }: { dir: "prev" | "next" }) => (
     <svg
@@ -2055,6 +2087,27 @@ export function DataTable(props: {
       <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
+
+  const SortArrow = ({ dir }: { dir: "asc" | "desc" | null }) => (
+    <span style={{ display: "inline-flex", flexDirection: "column", marginLeft: 4, opacity: dir ? 0.9 : 0.3 }}>
+      <svg width="8" height="5" viewBox="0 0 8 5" fill="none" style={{ opacity: dir === "asc" ? 1 : 0.4 }}>
+        <path d="M4 0L7.5 4.5H0.5L4 0Z" fill="currentColor" />
+      </svg>
+      <svg width="8" height="5" viewBox="0 0 8 5" fill="none" style={{ marginTop: 1, opacity: dir === "desc" ? 1 : 0.4 }}>
+        <path d="M4 4.5L0.5 0H7.5L4 4.5Z" fill="currentColor" />
+      </svg>
+    </span>
+  );
+
+  const handleHeaderClick = (key: string) => {
+    if (!props.sortable) return;
+    setSort((current) => {
+      if (!current || current.key !== key) return { key, dir: "asc" };
+      if (current.dir === "asc") return { key, dir: "desc" };
+      return null;
+    });
+    setPage(1);
+  };
 
   const pagerButtonStyle = (disabled: boolean): React.CSSProperties => ({
     display: "inline-flex",
@@ -2077,15 +2130,28 @@ export function DataTable(props: {
       <table className="min-w-full border-collapse">
         <thead>
           <tr style={{ background: "var(--bg-elevated)" }}>
-            {props.columns.map((column) => (
-              <th
-                key={column.key}
-                className="px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-[0.06em]"
-                style={{ borderBottom: "1px solid var(--border)", color: "var(--text-muted)" }}
-              >
-                {column.label}
-              </th>
-            ))}
+            {props.columns.map((column) => {
+              const activeDir = sort?.key === column.key ? sort.dir : null;
+              return (
+                <th
+                  key={column.key}
+                  className="px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-[0.06em]"
+                  style={{
+                    borderBottom: "1px solid var(--border)",
+                    color: "var(--text-muted)",
+                    cursor: props.sortable ? "pointer" : "default",
+                    userSelect: "none",
+                    whiteSpace: "nowrap",
+                  }}
+                  onClick={() => handleHeaderClick(column.key)}
+                >
+                  <span style={{ display: "inline-flex", alignItems: "center" }}>
+                    {column.label}
+                    {props.sortable ? <SortArrow dir={activeDir} /> : null}
+                  </span>
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
