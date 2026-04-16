@@ -2016,7 +2016,19 @@ export function DataTable(props: {
   columns: Array<{ key: string; label: string }>;
   rows: Array<Record<string, unknown>>;
   emptyState?: string;
+  pageSize?: number;
 }) {
+  const [page, setPage] = useState(1);
+
+  const total = props.rows.length;
+  const paginated = props.pageSize != null && props.pageSize > 0;
+  const pageSize = paginated ? (props.pageSize as number) : total;
+  const pageCount = paginated ? Math.max(1, Math.ceil(total / pageSize)) : 1;
+
+  useEffect(() => {
+    if (page > pageCount) setPage(1);
+  }, [total, props.pageSize, pageCount, page]);
+
   if (!props.rows.length) {
     return (
       <div
@@ -2027,6 +2039,38 @@ export function DataTable(props: {
       </div>
     );
   }
+
+  const start = paginated ? (page - 1) * pageSize : 0;
+  const end = paginated ? Math.min(start + pageSize, total) : total;
+  const visibleRows = paginated ? props.rows.slice(start, end) : props.rows;
+
+  const Chevron = ({ dir }: { dir: "prev" | "next" }) => (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 12 12"
+      fill="none"
+      style={{ opacity: 0.7, transform: dir === "prev" ? "rotate(90deg)" : "rotate(-90deg)" }}
+    >
+      <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+
+  const pagerButtonStyle = (disabled: boolean): React.CSSProperties => ({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "6px 10px",
+    borderRadius: 6,
+    border: "1px solid var(--border)",
+    background: "none",
+    color: disabled ? "var(--text-muted)" : "var(--text-primary)",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.5 : 1,
+    fontSize: 12,
+    fontWeight: 500,
+    transition: "background 120ms ease, border-color 120ms ease",
+  });
 
   return (
     <div className="overflow-hidden rounded-xl" style={{ boxShadow: "var(--shadow-card)" }}>
@@ -2045,12 +2089,12 @@ export function DataTable(props: {
           </tr>
         </thead>
         <tbody>
-          {props.rows.map((row, index) => (
+          {visibleRows.map((row, index) => (
             <tr
               key={index}
               style={{
                 background: "var(--bg-card)",
-                borderBottom: index < props.rows.length - 1 ? "1px solid var(--border)" : "none",
+                borderBottom: index < visibleRows.length - 1 ? "1px solid var(--border)" : "none",
                 transition: "background 120ms ease",
               }}
               onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
@@ -2069,6 +2113,47 @@ export function DataTable(props: {
           ))}
         </tbody>
       </table>
+      {paginated ? (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "10px 12px",
+            background: "var(--bg-elevated)",
+            borderTop: "1px solid var(--border)",
+            color: "var(--text-muted)",
+            fontSize: 12,
+          }}
+        >
+          <div>
+            Showing {total === 0 ? 0 : start + 1}–{end} of {total.toLocaleString()} rows
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              type="button"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              style={pagerButtonStyle(page <= 1)}
+            >
+              <Chevron dir="prev" />
+              Prev
+            </button>
+            <span style={{ color: "var(--text-muted)", minWidth: 70, textAlign: "center" }}>
+              Page {page} of {pageCount}
+            </span>
+            <button
+              type="button"
+              disabled={page >= pageCount}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              style={pagerButtonStyle(page >= pageCount)}
+            >
+              Next
+              <Chevron dir="next" />
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
