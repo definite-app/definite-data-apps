@@ -1,7 +1,21 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
+
+const buildMjsDir = path.dirname(fileURLToPath(import.meta.url));
+const toolkitNodeModules = path.join(buildMjsDir, "node_modules");
+const canonicalRuntimePath = path.join(buildMjsDir, "runtime", "definite-runtime.tsx");
+
+const definiteRuntimeAliasPlugin = {
+  name: "definite-runtime-alias",
+  setup(build) {
+    build.onResolve({ filter: /^@definite\/runtime$/ }, () => ({
+      path: canonicalRuntimePath,
+    }));
+  },
+};
 
 function usage() {
   console.error("Usage: node build.mjs <app-dir> [--preview-data /path/to/preview-data.json]");
@@ -76,6 +90,8 @@ function findHookCalls(source) {
   return calls;
 }
 
+const REQUIRED_FILTERS_MARKER_RE = /\{\{\s*required_filters\s*\}\}/;
+
 function validateManifest(manifest, manifestPath) {
   if (manifest.version !== 2) {
     throw new Error(`Expected ${manifestPath} to contain {"version": 2}`);
@@ -103,6 +119,39 @@ function validateManifest(manifest, manifestPath) {
     }
     if (!validKinds.has(resource.kind)) {
       throw new Error(`Resource ${key} in ${manifestPath} has unsupported kind "${resource.kind}"`);
+    }
+
+    const bindings = resource.requiredFilters;
+    if (bindings === undefined || bindings === null) {
+      continue;
+    }
+    if (typeof bindings !== "object" || Array.isArray(bindings)) {
+      throw new Error(`Resource ${key} in ${manifestPath}: requiredFilters must be an object`);
+    }
+    for (const [member, binding] of Object.entries(bindings)) {
+      if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+        throw new Error(
+          `Resource ${key} in ${manifestPath}: requiredFilters[${member}] must be an object with a "column" field`,
+        );
+      }
+      if (typeof binding.column !== "string" || binding.column.length === 0) {
+        throw new Error(
+          `Resource ${key} in ${manifestPath}: requiredFilters[${member}].column must be a non-empty string`,
+        );
+      }
+    }
+
+    // SQL resources with requiredFilters MUST contain the {{ required_filters }} marker.
+    // Cube resources don't need the marker — Cube filter members are dimension names and
+    // get merged server-side by the query handler.
+    const source = resource.source;
+    if (source && typeof source === "object" && source.type === "sql") {
+      if (typeof source.sql === "string" && !REQUIRED_FILTERS_MARKER_RE.test(source.sql)) {
+        throw new Error(
+          `Resource ${key} in ${manifestPath} declares requiredFilters but its SQL is missing the ` +
+            `{{ required_filters }} marker. Add it to a WHERE/AND clause where the tenant filter should land.`,
+        );
+      }
     }
   }
 }
@@ -215,6 +264,11 @@ const result = await build({
   jsx: "automatic",
   legalComments: "none",
   sourcemap: "inline",
+  // nodePaths lets esbuild resolve react/react-dom from the toolkit's own
+  // node_modules even when appDir lives outside this repo (e.g., a user
+  // scaffolds an app anywhere on disk and runs `node <toolkit>/build.mjs <app>`).
+  nodePaths: [toolkitNodeModules],
+  plugins: [definiteRuntimeAliasPlugin],
   define: {
     "process.env.NODE_ENV": JSON.stringify("production"),
   },
@@ -353,3 +407,52 @@ const html = `<!DOCTYPE html>
 
 await writeFile(path.join(outDir, "index.html"), html, "utf8");
 console.log(`Built ${path.join(outDir, "index.html")}`);
+
+// =============================================================================
+// Embedded variant: strip query declarations from the manifest and inject a
+// placeholder script tag that the Definite backend swaps for the real token
+// at serve time when the app is fetched via the embed route.
+// =============================================================================
+
+function buildEmbeddedManifest(src) {
+  const strippedResources = {};
+  for (const [key, resource] of Object.entries(src.resources ?? {})) {
+    if (!resource || typeof resource !== "object") {
+      strippedResources[key] = resource;
+      continue;
+    }
+    const source = resource.source ?? null;
+    if (source && typeof source === "object" && (source.type === "sql" || source.type === "cube")) {
+      // Replace the source with just its type + embedded:true so the runtime
+      // knows which backend branch to call, but doesn't see the raw SQL or
+      // cube query JSON.
+      strippedResources[key] = {
+        ...resource,
+        source: { type: source.type, embedded: true },
+      };
+    } else {
+      strippedResources[key] = resource;
+    }
+  }
+  return { ...src, resources: strippedResources };
+}
+
+const embeddedManifest = buildEmbeddedManifest(manifest);
+const EMBED_TOKEN_PLACEHOLDER =
+  '<script id="__definite_embed_token">window.__DEFINITE_EMBED=null;</script>';
+
+const embeddedHtml = html
+  .replace(
+    `<script id="definite-app-manifest" type="application/json">${escapeInlineScript(JSON.stringify(manifest))}</script>`,
+    `<script id="definite-app-manifest" type="application/json">${escapeInlineScript(JSON.stringify(embeddedManifest))}</script>\n  ${EMBED_TOKEN_PLACEHOLDER}`,
+  );
+
+if (!embeddedHtml.includes(EMBED_TOKEN_PLACEHOLDER)) {
+  throw new Error(
+    "build.mjs failed to emit the __definite_embed_token placeholder in the embedded HTML. " +
+      "The placeholder script tag format must match what the Definite embed route expects.",
+  );
+}
+
+await writeFile(path.join(outDir, "index.embedded.html"), embeddedHtml, "utf8");
+console.log(`Built ${path.join(outDir, "index.embedded.html")}`);

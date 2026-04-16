@@ -27,7 +27,7 @@ import {
   usePerspective,
   useSqlQuery,
   useTheme,
-} from "./definite-runtime";
+} from "@definite/runtime";
 
 type BranchOption = {
   branchId: string;

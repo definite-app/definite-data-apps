@@ -14,7 +14,6 @@ ifndef NAME
 endif
 	@if [ -d "examples/$(NAME)" ]; then echo "Error: examples/$(NAME) already exists"; exit 1; fi
 	cp -R templates/blank "examples/$(NAME)"
-	cp runtime/definite-runtime.tsx "examples/$(NAME)/src/definite-runtime.tsx"
 	@echo "Created examples/$(NAME). Edit app.json and src/App.tsx to get started."
 
 # Build an app to dist/index.html
