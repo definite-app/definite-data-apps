@@ -57,26 +57,33 @@ def gen_rows() -> list[dict]:
         status = random.choices(STATUSES, weights=STATUS_WEIGHTS, k=1)[0]
         base = random.lognormvariate(7.2, 0.55)  # ~$1000–$3000 typical, long tail
         amount = round(base * branch_bias[code], 2)
-        rows.append({
-            "transactionId": f"TXN-{100000 + i}",
-            "transactionDate": d.isoformat(),
-            "amount": amount,
-            "branchName": name,
-            "status": status,
-        })
+        rows.append(
+            {
+                "transactionId": f"TXN-{100000 + i}",
+                "transactionDate": d.isoformat(),
+                "amount": amount,
+                "branchName": name,
+                "status": status,
+            }
+        )
     rows.sort(key=lambda r: r["transactionDate"])
     return rows
 
 
 def write_parquet(rows: list[dict]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    table = pa.Table.from_pylist(rows, schema=pa.schema([
-        ("transactionId", pa.string()),
-        ("transactionDate", pa.string()),
-        ("amount", pa.float64()),
-        ("branchName", pa.string()),
-        ("status", pa.string()),
-    ]))
+    table = pa.Table.from_pylist(
+        rows,
+        schema=pa.schema(
+            [
+                ("transactionId", pa.string()),
+                ("transactionDate", pa.string()),
+                ("amount", pa.float64()),
+                ("branchName", pa.string()),
+                ("status", pa.string()),
+            ]
+        ),
+    )
     pq.write_table(table, PARQUET_PATH, compression="zstd")
 
 
@@ -93,9 +100,7 @@ def write_preview_json() -> None:
             "transactions": {"file": "data/transactions.parquet", "format": "parquet"},
         },
         "resources": {
-            "branches": [
-                {"branchId": code, "branchName": name} for code, name in BRANCHES
-            ],
+            "branches": [{"branchId": code, "branchName": name} for code, name in BRANCHES],
         },
     }
     PREVIEW_PATH.write_text(json.dumps(payload, indent=2) + "\n")
