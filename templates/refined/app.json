@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "name": "My App",
+  "entry": "src/main.tsx",
+  "resources": {
+    "main": {
+      "kind": "dataset",
+      "source": {
+        "type": "sql",
+        "sql": "SELECT id, STRFTIME(created_at, '%Y-%m-%d') AS createdDate, name FROM LAKE.SCHEMA.my_table LIMIT 10000"
+      },
+      "public": false
+    }
+  }
+}

@@ -68,10 +68,20 @@ definite-data-apps/
 ### 1. Create a new app
 
 ```bash
-make new-app NAME=my-app
+make new-app NAME=my-app                     # blank template (default)
+make new-app NAME=my-app TEMPLATE=refined    # sidebar shell + drill drawer
 ```
 
-This copies `templates/blank/` to `examples/my-app/`. The runtime is resolved via the `@definite/runtime` import alias; no per-app runtime file is needed.
+This copies `templates/<template>/` to `examples/my-app/`. The runtime is resolved via the `@definite/runtime` import alias; no per-app runtime file is needed.
+
+**Pick the template by shape, not by app size:**
+
+| Template | When to use |
+|----------|-------------|
+| `blank` (default) | Single-view dashboards, embedded Doc tiles, anything that doesn't need a navigation rail. Built on `AppShell`. |
+| `refined` | Multi-view analytics apps with ≥ 2 views, a sidebar, or ≥ 5 filter dimensions. Built on `ShellLayout` + `Sidebar` + `DrillProvider`. |
+
+A `refined` app that turns out to only need one view is fine — strip the nav down to one item and keep the shell. But a `blank` app that grows to 6 views will end up reinventing the sidebar; switch templates early if you see that coming.
 
 ### 2. Edit app.json and src/App.tsx
 
@@ -243,6 +253,103 @@ See the "UI components" section below for full details on each.
 - **`LoadingState`**: Full-page pulsing dots. Props: `message`.
 - **`ErrorState`**: Full-page error with red left bar. Props: `title`, `message`.
 - **`ResourceCacheBadge`**: Cache metadata popover. Props: `rows`, `cache`, `onClearAndReload`.
+
+## Refined SaaS shell (multi-view apps)
+
+A second track of primitives designed for apps with a sidebar and multiple views. Driven by a palette object instead of CSS vars, so customer brand accents flow through every chrome surface. Ships as the `refined` template.
+
+Canonical structure:
+
+```tsx
+import {
+  buildPalette, PaletteProvider, usePalette,
+  ShellLayout, Sidebar, SaasKpiCard, CachePopover,
+  DrillProvider, useDrill,
+  callFiFast, buildDrillPrompt,
+  useDataset, useSqlQuery, useTheme,
+} from "@definite/runtime";
+
+export default function App() {
+  const { theme, toggleTheme } = useTheme();
+  const palette = useMemo(() => buildPalette(theme, { accent: "#FF006E" }), [theme]);
+  const data = useDataset("main");
+  if (data.loading) return <LoadingState />;
+  if (data.error) return <ErrorState title="..." message={data.error} />;
+
+  return (
+    <PaletteProvider value={palette}>
+      <DrillProvider
+        aiChat={{
+          onAsk: (q, entity) => callFiFast({ prompt: buildDrillPrompt(q, entity) }),
+        }}
+      >
+        <InnerApp theme={theme} onThemeChange={(t) => t !== theme && toggleTheme()} dataset={data} />
+      </DrillProvider>
+    </PaletteProvider>
+  );
+}
+```
+
+### Shell primitives
+
+| Export | Role |
+|--------|------|
+| `buildPalette(theme, { accent? })` | Palette tokens with optional brand accent. |
+| `PaletteProvider` / `usePalette()` | Context for descendants. |
+| `ShellLayout` | Flex container with sidebar slot, breadcrumb, title, headerRight slot. Wraps children in `PaletteProvider`. |
+| `Sidebar` | Logo, nav, `dateRangeSlot`, `filterGroups` + `filters` (renders `FilterAccordion`), theme toggle, footer. |
+| `FilterAccordion` | Collapsible groups with per-group counts, global + per-group search, selected chips, swatch dots. |
+| `SaasKpiCard` | Accent top-line + sparkline + delta pill + loading shimmer. |
+| `CachePopover` | Click-to-inspect cache pill. |
+| `Sparkline` / `SkeletonShimmer` / `Breadcrumb` | Tiny primitives. |
+
+### Drill drawer
+
+Context-driven slide-over. Any descendant calls `useDrill().open(entity)`:
+
+```tsx
+drill.open({
+  kind: "kpi" | "row" | "chart",
+  id: "total_outstanding",
+  title: "Total outstanding",
+  value: "$50.8M",
+  breadcrumb: "Overview",
+  stats: [["Active", "2,511"]],
+  breakdown: [{ label: "2026-04", value: 1_780_000 }],
+  sql: "SELECT SUM(balance) FROM loans WHERE ...",
+  narrative: "Total principal balance across active contracts.",
+});
+```
+
+Author drill content inline at the call site — don't try to compute it in a shared helper yet. The pattern is young; wait until we have 3+ apps before extracting.
+
+### AI follow-up chat
+
+Pass `aiChat` to `DrillProvider` to render a chat input at the bottom of the drawer. `onAsk(userMessage, entity)` returns a string; throw to show an error message. The `callFiFast()` helper wraps `/v4/fi-fast`, extracting `response.content.parts[0].text`:
+
+```tsx
+<DrillProvider
+  aiChat={{
+    onAsk: (q, entity) => callFiFast({
+      prompt: buildDrillPrompt(q, entity),
+      // endpoint defaults to "/v4/fi-fast"; authToken optional
+    }),
+    placeholder: "Ask a follow-up…",
+  }}
+>
+```
+
+`callFiFast` defaults to same-origin cookies; pass `authToken` for Bearer auth. It's safe to leave wired in preview builds — the fetch will just 401 and the error bubbles into the chat as a message.
+
+### When to use `ShellLayout` vs `AppShell`
+
+| Use case | Component |
+|----------|-----------|
+| Multi-view analytics app (Loans, Risk, Originations...) | `ShellLayout` + `Sidebar` |
+| Single-view dashboard tile inside a Definite Doc | `AppShell` |
+| Embedded email-receipt-style full-width view | `AppShell` |
+
+Both are supported; they co-exist.
 
 ## Best practices
 
