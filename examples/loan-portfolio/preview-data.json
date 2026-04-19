@@ -1,0 +1,84 @@
+{
+  "context": {
+    "publicMode": false,
+    "driveFile": "preview://data-apps/loan-portfolio",
+    "appVersion": "v2"
+  },
+  "datasets": {
+    "loans": {
+      "file": "data/loan_book.parquet",
+      "format": "parquet"
+    }
+  },
+  "resources": {
+    "riskBands": [
+      {
+        "band": "A",
+        "range": "750+",
+        "apr": 5.8,
+        "defaultRate": 0.6,
+        "color": "#10B981"
+      },
+      {
+        "band": "B",
+        "range": "700-749",
+        "apr": 7.2,
+        "defaultRate": 1.4,
+        "color": "#84CC16"
+      },
+      {
+        "band": "C",
+        "range": "650-699",
+        "apr": 9.5,
+        "defaultRate": 3.1,
+        "color": "#F59E0B"
+      },
+      {
+        "band": "D",
+        "range": "600-649",
+        "apr": 12.8,
+        "defaultRate": 6.2,
+        "color": "#F97316"
+      },
+      {
+        "band": "E",
+        "range": "<600",
+        "apr": 17.4,
+        "defaultRate": 11.8,
+        "color": "#EF4444"
+      }
+    ],
+    "statusCatalog": [
+      {
+        "key": "current",
+        "label": "Current",
+        "tone": "ok"
+      },
+      {
+        "key": "late_30",
+        "label": "30 days late",
+        "tone": "warn"
+      },
+      {
+        "key": "late_60",
+        "label": "60 days late",
+        "tone": "warn"
+      },
+      {
+        "key": "late_90",
+        "label": "90+ late",
+        "tone": "bad"
+      },
+      {
+        "key": "paid_off",
+        "label": "Paid off",
+        "tone": "muted"
+      },
+      {
+        "key": "charged_off",
+        "label": "Charged off",
+        "tone": "bad"
+      }
+    ]
+  }
+}

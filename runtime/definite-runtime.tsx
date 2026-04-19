@@ -3158,8 +3158,15 @@ export function DateRangeFilter(props: {
   label?: React.ReactNode;
   presets?: DateRangePreset[];
   className?: string;
+  // "below-start" (default): popover anchored below the trigger, left-aligned — good for top-of-page filters.
+  // "right-start": popover escapes the trigger's container and flies out to the right of it (e.g. sidebar → main content). Uses position:fixed.
+  popoverPlacement?: "below-start" | "right-start";
+  triggerStyle?: React.CSSProperties;
 }) {
   const presets = props.presets ?? DEFAULT_DATE_RANGE_PRESETS;
+  const placement = props.popoverPlacement ?? "below-start";
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null);
   const [open, setOpen] = useState(false);
   const [mainTab, setMainTab] = useState<"relative" | "custom">("relative");
   const [draftMode, setDraftMode] = useState<"previous" | "next">("previous");
@@ -3180,6 +3187,14 @@ export function DateRangeFilter(props: {
     }
     prevOpenRef.current = open;
   }, [open, props.value.from, props.value.to]);
+
+  // For "right-start" placement: measure the trigger rect on open so the popover
+  // can escape its container (e.g. sidebar) and anchor next to it via position:fixed.
+  useEffect(() => {
+    if (!open || placement !== "right-start" || !triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    setPopoverPos({ top: rect.top, left: rect.right + 8 });
+  }, [open, placement]);
 
   const relativePreview = useMemo(
     () => computeRelativeRange(draftMode, draftN, draftUnit, draftIncludeCurrent),
@@ -3232,6 +3247,7 @@ export function DateRangeFilter(props: {
         </div>
       ) : null}
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
         onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--border-hover)"; }}
@@ -3249,6 +3265,7 @@ export function DateRangeFilter(props: {
           cursor: "pointer",
           minWidth: 200,
           fontWeight: 500,
+          ...(props.triggerStyle ?? {}),
         }}
       >
         <DateRangeCalendarIcon />
@@ -3265,20 +3282,38 @@ export function DateRangeFilter(props: {
             onClick={() => setOpen(false)}
           />
           <div
-            style={{
-              position: "absolute",
-              top: "calc(100% + 6px)",
-              left: 0,
-              zIndex: 9999,
-              width: 560,
-              background: "var(--bg-card)",
-              border: "1px solid var(--border)",
-              borderRadius: 12,
-              boxShadow: "0 20px 40px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--border)",
-              display: "grid",
-              gridTemplateColumns: "160px 1fr",
-              overflow: "hidden",
-            }}
+            style={
+              placement === "right-start"
+                ? {
+                    position: "fixed",
+                    top: popoverPos?.top ?? 0,
+                    left: popoverPos?.left ?? 0,
+                    visibility: popoverPos ? "visible" : "hidden",
+                    zIndex: 9999,
+                    width: 560,
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 12,
+                    boxShadow: "0 20px 40px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--border)",
+                    display: "grid",
+                    gridTemplateColumns: "160px 1fr",
+                    overflow: "hidden",
+                  }
+                : {
+                    position: "absolute",
+                    top: "calc(100% + 6px)",
+                    left: 0,
+                    zIndex: 9999,
+                    width: 560,
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 12,
+                    boxShadow: "0 20px 40px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--border)",
+                    display: "grid",
+                    gridTemplateColumns: "160px 1fr",
+                    overflow: "hidden",
+                  }
+            }
           >
             <div style={{ background: "var(--bg-elevated)", padding: 8, borderRight: "1px solid var(--border)" }}>
               <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", padding: "6px 10px 10px", letterSpacing: 0.5 }}>
