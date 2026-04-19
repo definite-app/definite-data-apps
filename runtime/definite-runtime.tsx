@@ -4776,6 +4776,10 @@ export function SaasDataTable<T extends Record<string, unknown>>(props: {
   height?: number | string;
   // Optional stable column-width persistence key (localStorage).
   widthStorageKey?: string;
+  // Rows per page. Pagination auto-kicks in when the filtered+sorted result
+  // set exceeds this. Default: 2000. Pass Infinity to disable paging and
+  // virtualize the whole set (not recommended above ~50K rows).
+  pageSize?: number;
 }) {
   const P = usePalette();
   const ROW_H = props.rowHeight ?? 34;
@@ -4874,7 +4878,25 @@ export function SaasDataTable<T extends Record<string, unknown>>(props: {
     return arr;
   }, [searched, sort]);
 
-  // Virtualization
+  // Paging — auto-kicks in once the filtered+sorted result set exceeds pageSize
+  // so we don't end up scrolling through tens of thousands of virtualized rows.
+  // Aggregates are computed over the full filtered set (`sorted`), not the page.
+  const pageSize = props.pageSize ?? 2000;
+  const pagingActive = sorted.length > pageSize && Number.isFinite(pageSize);
+  const pageCount = pagingActive ? Math.max(1, Math.ceil(sorted.length / pageSize)) : 1;
+  const [page, setPage] = useState(0);
+  // Reset to first page whenever the underlying result set changes.
+  useEffect(() => { setPage(0); }, [colFilters, search, sort, pageSize]);
+  // Clamp if the result set shrinks below the current page.
+  useEffect(() => { if (page >= pageCount) setPage(0); }, [pageCount, page]);
+  const pageStart = pagingActive ? page * pageSize : 0;
+  const pageEnd = pagingActive ? Math.min(sorted.length, pageStart + pageSize) : sorted.length;
+  const paged = useMemo(
+    () => (pagingActive ? sorted.slice(pageStart, pageEnd) : sorted),
+    [sorted, pageStart, pageEnd, pagingActive],
+  );
+
+  // Virtualization — operates over the current page.
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(600);
@@ -4889,17 +4911,17 @@ export function SaasDataTable<T extends Record<string, unknown>>(props: {
     return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
   }, []);
 
-  // Reset scroll on filter/search/sort change so users see the top of the result set.
+  // Reset scroll on filter/search/sort/page change so users see the top of the current page.
   useEffect(() => {
     if (scrollerRef.current) scrollerRef.current.scrollTop = 0;
     setScrollTop(0);
-  }, [colFilters, search, sort]);
+  }, [colFilters, search, sort, page]);
 
   const overscan = 10;
-  const totalH = sorted.length * ROW_H;
+  const totalH = paged.length * ROW_H;
   const startIdx = Math.max(0, Math.floor(scrollTop / ROW_H) - overscan);
-  const endIdx = Math.min(sorted.length, Math.ceil((scrollTop + viewportH) / ROW_H) + overscan);
-  const visible = sorted.slice(startIdx, endIdx);
+  const endIdx = Math.min(paged.length, Math.ceil((scrollTop + viewportH) / ROW_H) + overscan);
+  const visible = paged.slice(startIdx, endIdx);
 
   const aggregates = props.aggregates?.(sorted);
 
@@ -5095,6 +5117,29 @@ export function SaasDataTable<T extends Record<string, unknown>>(props: {
         )}
       </div>
 
+      {/* Pagination bar — only when the filtered set exceeds pageSize */}
+      {pagingActive ? (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "6px 14px", borderTop: `1px solid ${P.border}`,
+          background: P.elev, fontSize: 11, color: P.sub,
+          flexShrink: 0,
+        }}>
+          <span style={{ fontFamily: P.mono, color: P.dim }}>
+            Rows {(pageStart + 1).toLocaleString()}–{pageEnd.toLocaleString()} of {sorted.length.toLocaleString()}
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <SaasPageBtn onClick={() => setPage(0)}                                 disabled={page === 0}              P={P}>« First</SaasPageBtn>
+            <SaasPageBtn onClick={() => setPage((p) => Math.max(0, p - 1))}         disabled={page === 0}              P={P}>‹ Prev</SaasPageBtn>
+            <span style={{ fontFamily: P.mono, fontSize: 11, color: P.text, padding: "0 8px" }}>
+              Page {page + 1} of {pageCount}
+            </span>
+            <SaasPageBtn onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={page >= pageCount - 1} P={P}>Next ›</SaasPageBtn>
+            <SaasPageBtn onClick={() => setPage(pageCount - 1)}                      disabled={page >= pageCount - 1} P={P}>Last »</SaasPageBtn>
+          </div>
+        </div>
+      ) : null}
+
       {/* Aggregates footer (sticky at bottom) */}
       {aggregates && Object.keys(aggregates).length > 0 ? (
         <div style={{
@@ -5112,6 +5157,27 @@ export function SaasDataTable<T extends Record<string, unknown>>(props: {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function SaasPageBtn(props: { children: React.ReactNode; onClick: () => void; disabled: boolean; P: SaasPalette }) {
+  const { P } = props;
+  return (
+    <button
+      onClick={props.onClick}
+      disabled={props.disabled}
+      style={{
+        padding: "3px 8px", fontSize: 11, fontFamily: P.mono,
+        background: "transparent", border: `1px solid ${P.border}`,
+        color: props.disabled ? P.faint : P.sub,
+        borderRadius: 4,
+        cursor: props.disabled ? "not-allowed" : "pointer",
+      }}
+      onMouseEnter={(e) => { if (!props.disabled) { e.currentTarget.style.color = P.text; e.currentTarget.style.borderColor = P.rule; } }}
+      onMouseLeave={(e) => { e.currentTarget.style.color = props.disabled ? P.faint : P.sub; e.currentTarget.style.borderColor = P.border; }}
+    >
+      {props.children}
+    </button>
   );
 }
 
