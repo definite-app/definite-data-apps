@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "name": "Loan Portfolio",
+  "entry": "src/main.tsx",
+  "resources": {
+    "loans": {
+      "kind": "dataset",
+      "source": {
+        "type": "sql",
+        "sql": "SELECT loan_id AS loanId, borrower, amount::BIGINT AS amount, balance::BIGINT AS balance, fico::INTEGER AS fico, fico_band AS ficoBand, rate::DOUBLE AS rate, term::INTEGER AS term, income::BIGINT AS income, income_band AS incomeBand, dti::DOUBLE AS dti, dti_band AS dtiBand, status, state, product, channel, employment, purpose, autopay, pay_method AS payMethod, STRFTIME(originated, '%Y-%m-%d') AS originated, STRFTIME(originated, '%Y-%m') AS originatedMonth, vintage, mob::INTEGER AS mob, STRFTIME(last_pay, '%Y-%m-%d') AS lastPay, collections_flag AS collectionsFlag FROM LAKE.SCHEMA.loan_book LIMIT 500000"
+      },
+      "public": false
+    },
+    "riskBands": {
+      "kind": "json",
+      "source": {
+        "type": "sql",
+        "sql": "SELECT band, range, apr::DOUBLE AS apr, default_rate::DOUBLE AS defaultRate, color FROM LAKE.SCHEMA.risk_bands ORDER BY band"
+      },
+      "public": false
+    },
+    "statusCatalog": {
+      "kind": "json",
+      "source": {
+        "type": "sql",
+        "sql": "SELECT key, label, tone FROM LAKE.SCHEMA.loan_statuses"
+      },
+      "public": false
+    }
+  }
+}
