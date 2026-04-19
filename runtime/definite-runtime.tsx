@@ -4371,6 +4371,16 @@ export type DrillEntity = {
   extra?: React.ReactNode;
 };
 
+// Optional AI follow-up chat rendered at the bottom of the drill drawer.
+// Apps wire `onAsk` to whatever backend they prefer — typically Definite's
+// fi-fast endpoint via the callFiFast() helper below. Returning a string
+// appends it as an "agent" message; throwing shows the error as a message.
+export type DrillAiChatConfig = {
+  onAsk: (userMessage: string, entity: DrillEntity) => Promise<string>;
+  placeholder?: string;
+  disclaimer?: string;
+};
+
 type DrillContextValue = {
   open: (e: DrillEntity) => void;
   close: () => void;
@@ -4378,7 +4388,10 @@ type DrillContextValue = {
 
 const DrillContext = React.createContext<DrillContextValue | null>(null);
 
-export function DrillProvider(props: { children: React.ReactNode }) {
+export function DrillProvider(props: {
+  children: React.ReactNode;
+  aiChat?: DrillAiChatConfig;
+}) {
   const [entity, setEntity] = useState<DrillEntity | null>(null);
   const ctx = useMemo<DrillContextValue>(
     () => ({ open: (e) => setEntity(e), close: () => setEntity(null) }),
@@ -4387,9 +4400,76 @@ export function DrillProvider(props: { children: React.ReactNode }) {
   return (
     <DrillContext.Provider value={ctx}>
       {props.children}
-      <DrillDrawer entity={entity} onClose={ctx.close} />
+      <DrillDrawer entity={entity} onClose={ctx.close} aiChat={props.aiChat} />
     </DrillContext.Provider>
   );
+}
+
+// ── fi-fast helper ─────────────────────────────────────────────────────────
+// One-shot wrapper around Definite's /v4/fi-fast endpoint. The response
+// shape is Gemini-style: { content: { role, parts: [{ text }] }, usage, ... }.
+// We extract parts[0].text. Callers handle auth — pass an `authToken` if the
+// host needs Bearer auth, or rely on same-origin cookies (credentials: "include").
+
+export type FiFastOptions = {
+  endpoint?: string;         // default: "/v4/fi-fast"
+  prompt: string;
+  system?: string;
+  model?: string;            // default: "gemini-3-flash-preview"
+  temperature?: number;      // default: 0.1
+  maxOutputTokens?: number;  // default: 4096
+  authToken?: string;        // if set, sent as Bearer
+  credentials?: RequestCredentials;
+  signal?: AbortSignal;
+};
+
+export async function callFiFast(opts: FiFastOptions): Promise<string> {
+  const res = await fetch(opts.endpoint ?? "/v4/fi-fast", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(opts.authToken ? { Authorization: `Bearer ${opts.authToken}` } : {}),
+    },
+    credentials: opts.credentials ?? (opts.authToken ? "same-origin" : "include"),
+    signal: opts.signal,
+    body: JSON.stringify({
+      prompt: opts.prompt,
+      system: opts.system,
+      model: opts.model ?? "gemini-3-flash-preview",
+      temperature: opts.temperature ?? 0.1,
+      max_output_tokens: opts.maxOutputTokens ?? 4096,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`fi-fast ${res.status}: ${body.slice(0, 200)}`);
+  }
+  const json = await res.json().catch(() => null) as {
+    content?: { parts?: Array<{ text?: string }> };
+  } | null;
+  return json?.content?.parts?.[0]?.text ?? "";
+}
+
+// Build a prompt that grounds fi-fast in the drill entity's context. Apps
+// can use this as-is, wrap it, or skip it entirely and build their own.
+export function buildDrillPrompt(userMessage: string, entity: DrillEntity): string {
+  const ctx = {
+    entity: entity.title,
+    kind: entity.kind,
+    value: entity.value,
+    subvalue: entity.subvalue,
+    breadcrumb: entity.breadcrumb,
+    stats: entity.stats,
+    breakdown: entity.breakdown?.slice(0, 12),
+  };
+  return `You are a senior data analyst. The user is inspecting a dashboard widget and clicked to drill in.
+
+Widget context:
+${JSON.stringify(ctx, null, 2)}
+
+User question: ${userMessage}
+
+Answer in 2-4 sentences. Ground your answer in the numbers above. Be specific and direct. No preamble.`;
 }
 
 export function useDrill(): DrillContextValue {
@@ -4398,9 +4478,21 @@ export function useDrill(): DrillContextValue {
   return v;
 }
 
-function DrillDrawer({ entity, onClose }: { entity: DrillEntity | null; onClose: () => void }) {
+function DrillDrawer({ entity, onClose, aiChat }: {
+  entity: DrillEntity | null;
+  onClose: () => void;
+  aiChat?: DrillAiChatConfig;
+}) {
   const P = usePalette();
   useSaasKeyframes();
+  type ChatMsg = { role: "user" | "agent" | "error"; text: string };
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [draft, setDraft] = useState("");
+  const [thinking, setThinking] = useState(false);
+
+  // Reset chat whenever the drill target changes; a new entity → fresh thread.
+  useEffect(() => { setMessages([]); setDraft(""); setThinking(false); }, [entity?.id]);
+
   useEffect(() => {
     if (!entity) return;
     document.body.style.overflow = "hidden";
@@ -4413,6 +4505,23 @@ function DrillDrawer({ entity, onClose }: { entity: DrillEntity | null; onClose:
   }, [entity, onClose]);
   if (!entity) return null;
   const maxBar = entity.breakdown ? Math.max(...entity.breakdown.map((b) => Math.abs(b.value))) || 1 : 1;
+
+  const ask = async () => {
+    if (!aiChat || !draft.trim() || thinking) return;
+    const q = draft.trim();
+    setDraft("");
+    setMessages((m) => [...m, { role: "user", text: q }]);
+    setThinking(true);
+    try {
+      const reply = await aiChat.onAsk(q, entity);
+      setMessages((m) => [...m, { role: "agent", text: reply || "(no response)" }]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setMessages((m) => [...m, { role: "error", text: msg }]);
+    } finally {
+      setThinking(false);
+    }
+  };
   return (
     <>
       <div onClick={onClose} style={{
@@ -4487,7 +4596,7 @@ function DrillDrawer({ entity, onClose }: { entity: DrillEntity | null; onClose:
             </div>
           ) : null}
           {entity.sql ? (
-            <div>
+            <div style={{ marginBottom: aiChat ? 22 : 0 }}>
               <DrillSectionLabel>SQL</DrillSectionLabel>
               <pre style={{
                 margin: 0, padding: 12, background: P.elev, border: `1px solid ${P.border}`,
@@ -4497,7 +4606,70 @@ function DrillDrawer({ entity, onClose }: { entity: DrillEntity | null; onClose:
             </div>
           ) : null}
           {entity.extra ?? null}
+          {aiChat && messages.length > 0 ? (
+            <div style={{ marginBottom: 12 }}>
+              <DrillSectionLabel>Follow-up</DrillSectionLabel>
+              {messages.map((m, i) => (
+                <div key={i} style={{
+                  fontSize: 12, lineHeight: 1.55, marginBottom: 10,
+                  padding: "8px 10px", borderRadius: 6,
+                  background: m.role === "user" ? P.elev : m.role === "error" ? P.badSoft : "transparent",
+                  color: m.role === "error" ? P.bad : m.role === "user" ? P.text : P.sub,
+                  border: m.role === "agent" ? `1px solid ${P.border}` : "none",
+                  whiteSpace: "pre-wrap",
+                }}>
+                  <div style={{
+                    fontSize: 10, fontFamily: P.mono, textTransform: "uppercase",
+                    letterSpacing: "0.08em", color: P.faint, marginBottom: 4,
+                  }}>
+                    {m.role === "user" ? "You" : m.role === "error" ? "Error" : "Agent"}
+                  </div>
+                  {m.text}
+                </div>
+              ))}
+              {thinking ? (
+                <div style={{ fontSize: 11, color: P.dim, fontFamily: P.mono, padding: "4px 10px" }}>
+                  <span style={{ animation: "saasPulse 0.9s ease-in-out infinite" }}>thinking…</span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
+        {aiChat ? (
+          <div style={{ borderTop: `1px solid ${P.border}`, padding: "12px 18px", background: P.sidebar }}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } }}
+                placeholder={aiChat.placeholder ?? "Ask a follow-up…"}
+                disabled={thinking}
+                style={{
+                  flex: 1, padding: "8px 12px", fontSize: 13,
+                  background: P.elev, border: `1px solid ${P.border}`,
+                  color: P.text, borderRadius: 6, outline: "none", fontFamily: P.sans,
+                }}
+                onFocus={(e) => (e.currentTarget.style.borderColor = P.accent)}
+                onBlur={(e) => (e.currentTarget.style.borderColor = P.border)}
+              />
+              <button
+                onClick={ask}
+                disabled={thinking || !draft.trim()}
+                style={{
+                  padding: "8px 14px", fontSize: 13, fontWeight: 500,
+                  background: thinking || !draft.trim() ? P.elev : P.accent,
+                  color: thinking || !draft.trim() ? P.dim : "#fff",
+                  border: `1px solid ${thinking || !draft.trim() ? P.border : P.accent}`,
+                  borderRadius: 6, cursor: thinking || !draft.trim() ? "not-allowed" : "pointer",
+                  fontFamily: P.sans,
+                }}
+              >Ask</button>
+            </div>
+            {aiChat.disclaimer ? (
+              <div style={{ fontSize: 10, color: P.faint, marginTop: 6, fontFamily: P.mono }}>{aiChat.disclaimer}</div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </>
   );

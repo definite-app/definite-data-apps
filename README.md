@@ -21,18 +21,28 @@ Column names in your `useSqlQuery` SQL must match the aliases in your `app.json`
 ```bash
 git clone https://github.com/definite-app/definite-data-apps.git
 cd definite-data-apps
-make setup                        # npm install
-make new-app NAME=my-app          # copy blank template
-# Edit examples/my-app/app.json   (declare your data resources)
-# Edit examples/my-app/src/App.tsx (build your UI)
-make build NAME=my-app            # build to dist/index.html
+make setup                                   # npm install
+make new-app NAME=my-app                     # blank template (one KPI)
+# or:
+make new-app NAME=my-app TEMPLATE=refined    # sidebar shell + drill drawer
+# Edit examples/my-app/app.json              (declare your data resources)
+# Edit examples/my-app/src/App.tsx           (build your UI)
+make build NAME=my-app                       # build to dist/index.html
 ```
 
-To preview the included example with mock data:
+Two bundled templates live under `templates/`:
+
+| Template | When to use |
+|---|---|
+| `blank` | Single-view dashboards, embedded tiles, anything that doesn't need a navigation rail. Built on `AppShell`. |
+| `refined` | Multi-view analytics apps. Sidebar with nav + date range + 10-filter accordion, KPI cards with sparklines, drill drawer, cache popover, optional AI follow-up chat. Built on `ShellLayout` + `Sidebar`. |
+
+To preview bundled examples with mock data:
 
 ```bash
-make preview NAME=revenue-explorer
-open examples/revenue-explorer/dist/index.html
+make preview NAME=revenue-explorer    # blank-style
+make preview NAME=loan-portfolio      # refined-style reference app
+open examples/<name>/dist/index.html
 ```
 
 ## Directory structure
@@ -421,6 +431,111 @@ Cache metadata popover showing row count, source, load time, TTL, and "Clear cac
 | `rows` | `number?` | Row count to display |
 | `cache` | `ResourceCacheDetails` | Cache metadata from `useDataset()` |
 | `onClearAndReload` | `() => Promise<void>` | Clear + reload handler (use dataset's `refresh()`) |
+
+## Refined SaaS shell primitives
+
+A second track of components built for multi-view analytics apps. They're driven by a palette object (not CSS vars), so apps can pass a brand `accent` at the root and every surface (KPI top-line, active nav, filter chip, loading dot) picks it up. Pair with the `refined` template.
+
+```tsx
+import {
+  buildPalette, PaletteProvider, usePalette,
+  ShellLayout, Sidebar, SaasKpiCard,
+  DrillProvider, useDrill, CachePopover,
+  callFiFast, buildDrillPrompt,
+} from "@definite/runtime";
+
+const palette = buildPalette(theme, { accent: "#FF006E" });
+
+<PaletteProvider value={palette}>
+  <DrillProvider
+    aiChat={{
+      onAsk: (q, entity) => callFiFast({ prompt: buildDrillPrompt(q, entity) }),
+    }}
+  >
+    <ShellLayout
+      palette={palette}
+      sidebar={<Sidebar logo={...} navItems={...} activeView={...} ... />}
+      title="Overview"
+      headerRight={<CachePopover cache={data.cache} onRefresh={data.refresh} ... />}
+    >
+      <SaasKpiCard title="Total rows" value={count} onClick={() => drill.open({...})} />
+    </ShellLayout>
+  </DrillProvider>
+</PaletteProvider>
+```
+
+### Palette
+
+| Export | Purpose |
+|--------|---------|
+| `buildPalette(theme, { accent? })` | Returns a `SaasPalette` of semantic colors + fonts. `accent` override derives `accentSoft` automatically. |
+| `PaletteProvider` / `usePalette()` | Context for descendant primitives. |
+
+### Shell
+
+| Export | Purpose |
+|--------|---------|
+| `ShellLayout` | Outer flex container; renders the sidebar slot, breadcrumb, title, and a `headerRight` slot (typically `CachePopover` + an Export button). Wraps children in `PaletteProvider`. |
+| `Sidebar` | Logo, nav, `dateRangeSlot`, `FilterAccordion` (if `filterGroups` provided), theme toggle, footer slot. |
+| `FilterAccordion` | Collapsible filter groups with per-group counts, global + per-group search, selected chips. |
+| `Breadcrumb` | Simple `/`-separated trail. |
+
+### Data display
+
+| Export | Purpose |
+|--------|---------|
+| `SaasKpiCard` | Accent top-line + sparkline + delta pill + loading shimmer. Props: `title`, `value`, `delta?`, `up?`, `sub?`, `spark?`, `accent?`, `loading?`, `onClick?`. |
+| `Sparkline` | 32-px SVG polyline + last-point dot. Props: `values`, `color?`, `width?`, `height?`. |
+| `SkeletonShimmer` | Palette-driven loading shimmer. Props: `width?`, `height?`, `radius?`. |
+| `CachePopover` | Click-to-inspect cache pill with "Clear cache & reload". Same cache object as `useDataset().cache`. |
+
+### Drill drawer
+
+`DrillProvider` mounts a slide-over drawer. Any descendant calls `useDrill().open(entity)` to show it. The drawer renders computed stats, breakdown bars, SQL, and an optional AI follow-up chat.
+
+```tsx
+const drill = useDrill();
+drill.open({
+  kind: "kpi",                 // "kpi" | "row" | "chart"
+  id: "total_outstanding",
+  title: "Total outstanding",
+  value: "$50.8M",
+  breadcrumb: "Overview",
+  stats: [["Active", "2,511"], ["Avg", "$33K"]],
+  breakdown: [{ label: "2026-04", value: 1_780_000 }, ...],
+  sql: "SELECT SUM(balance) FROM loans WHERE ...",
+  narrative: "Total principal balance across active contracts.",
+});
+```
+
+Wire AI chat by passing `aiChat` to `DrillProvider`:
+
+```tsx
+<DrillProvider
+  aiChat={{
+    onAsk: (userMessage, entity) => callFiFast({
+      prompt: buildDrillPrompt(userMessage, entity),
+    }),
+    placeholder: "Ask a follow-up…",
+  }}
+>
+```
+
+### AI integration
+
+| Export | Purpose |
+|--------|---------|
+| `callFiFast({ prompt, system?, authToken?, ... })` | One-shot POST to `/v4/fi-fast`. Extracts `response.content.parts[0].text`. Same-origin cookies by default; pass `authToken` for Bearer auth. |
+| `buildDrillPrompt(userMessage, entity)` | Default prompt builder that grounds the model in the drill entity's stats + breakdown. Use as-is or wrap. |
+
+### When to use `ShellLayout` vs `AppShell`
+
+| Use case | Component |
+|----------|-----------|
+| Multi-view standalone analytics app with nav rail | `ShellLayout` + `Sidebar` (refined template) |
+| Embedded Doc tile, single-view dashboard, email-receipt-style view | `AppShell` (blank template) |
+
+Both remain supported and will coexist.
 
 ## Best practices
 
