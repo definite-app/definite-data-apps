@@ -16,6 +16,8 @@ import {
   type FilterAccordionOption,
   LoadingState,
   PaletteProvider,
+  SaasDataTable,
+  type SaasDataTableColumn,
   SaasKpiCard,
   ShellLayout,
   Sidebar,
@@ -216,9 +218,6 @@ function InnerApp({ theme, onThemeChange, dataset }: {
   const [view, setView] = useState("overview");
   const [dateRange, setDateRange] = useState<DateRangeValue>(initialDateRange);
   const [filters, setFilters] = useState<Filters>({});
-  const [sortKey, setSortKey] = useState("originated");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  const [loanSearch, setLoanSearch] = useState("");
 
   const where = useMemo(() => buildWhere(filters, dateRange.from, dateRange.to), [filters, dateRange.from, dateRange.to]);
   const t = dataset.tableRef;
@@ -311,15 +310,20 @@ function InnerApp({ theme, onThemeChange, dataset }: {
     t ? `SELECT loanId, borrower, amount, fico, status, state, originated FROM ${t}${where} ORDER BY originated DESC LIMIT 8` : "",
     [where],
   );
+  // Full loan book for the table — the table handles sort/search/filter/virtualize
+  // client-side, so we just push the global sidebar filters and date range into SQL
+  // and let the table do the rest. 2,588 rows is trivial to materialize; tune LIMIT
+  // up if your book is bigger, or add per-column pushdown once it hurts.
   const loansSql = useMemo(() => {
     if (!t) return "";
-    let clause = where;
-    if (loanSearch.trim()) {
-      const extra = `(borrower ILIKE '%${esc(loanSearch.trim())}%' OR loanId ILIKE '%${esc(loanSearch.trim())}%')`;
-      clause = where ? `${where} AND ${extra}` : ` WHERE ${extra}`;
-    }
-    return `SELECT loanId, borrower, amount, balance, fico, ficoBand, rate, term, status, state, vintage, originated FROM ${t}${clause} ORDER BY ${sortKey} ${sortDir.toUpperCase()} LIMIT 500`;
-  }, [t, where, loanSearch, sortKey, sortDir]);
+    return `
+      SELECT loanId, borrower, state, product, channel, employment,
+             amount, balance, fico, ficoBand, rate, term,
+             income, dti, status, originated, lastPay, autopay
+      FROM ${t}${where}
+      LIMIT 10000
+    `;
+  }, [t, where]);
   const loansTable = useSqlQuery<Array<Record<string, unknown>>>(dataset, loansSql, [loansSql]);
 
   const loading = kpis.loading || monthly.loading || statusAgg.loading || bandAgg.loading || stateAgg.loading || recent.loading;
@@ -390,13 +394,7 @@ function InnerApp({ theme, onThemeChange, dataset }: {
         />
       )}
       {view === "loans" && (
-        <LoansView
-          loading={loansTable.loading}
-          rows={loansTable.data || []}
-          sortKey={sortKey} sortDir={sortDir}
-          onSort={(k) => { if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc"); else { setSortKey(k); setSortDir("desc"); } }}
-          search={loanSearch} setSearch={setLoanSearch}
-        />
+        <LoansView loading={loansTable.loading} rows={loansTable.data || []} />
       )}
       {view === "risk" && (
         <RiskView loading={loading} bands={bandAgg.data || []} riskMeta={riskBands.data || []} />
@@ -704,123 +702,145 @@ function OverviewView({ loading, k0, monthly, statusAgg, bandAgg, recent, sparkV
   );
 }
 
-function LoansView({ loading, rows, sortKey, sortDir, onSort, search, setSearch }: {
-  loading: boolean;
-  rows: Array<Record<string, unknown>>;
-  sortKey: string; sortDir: "asc" | "desc"; onSort: (k: string) => void;
-  search: string; setSearch: (s: string) => void;
-}) {
+type LoanRow = {
+  loanId: string;
+  borrower: string;
+  state: string;
+  product: string;
+  channel: string;
+  employment: string;
+  amount: number;
+  balance: number;
+  fico: number;
+  ficoBand: string;
+  rate: number;
+  term: number;
+  income: number;
+  dti: number;
+  status: string;
+  originated: string;
+  lastPay: string;
+  autopay: boolean;
+};
+
+function LoansView({ loading, rows }: { loading: boolean; rows: Array<Record<string, unknown>> }) {
   const P = usePalette();
   const drill = useDrill();
-  const cardStyle: React.CSSProperties = { background: P.card, border: `1px solid ${P.border}`, borderRadius: 10 };
-  const cols: Array<{ key: string; label: string; align?: "left" | "right"; render?: (v: unknown, row: Record<string, unknown>) => React.ReactNode; mono?: boolean }> = [
-    { key: "loanId", label: "Loan", mono: true },
-    { key: "borrower", label: "Borrower" },
-    { key: "amount", label: "Amount", align: "right", mono: true, render: (v) => fmtMoneyFull(v) },
-    { key: "balance", label: "Balance", align: "right", mono: true, render: (v) => fmtMoneyFull(v) },
-    { key: "fico", label: "FICO", align: "right", mono: true, render: (v) => <span style={{ color: Number(v) < 650 ? P.bad : P.sub }}>{String(v)}</span> },
-    { key: "ficoBand", label: "Band", align: "right", mono: true },
-    { key: "rate", label: "APR", align: "right", mono: true, render: (v) => Number(v).toFixed(2) + "%" },
-    { key: "term", label: "Term", align: "right", mono: true },
-    { key: "state", label: "State", mono: true },
-    { key: "vintage", label: "Vintage", mono: true },
-    { key: "status", label: "Status", render: (v) => {
-      const s = String(v);
-      const c = statusTone(s, P.ok, P.warn, P.bad, P.dim);
-      const bg = statusSoft(s, P.okSoft, P.warnSoft, P.badSoft, P.elev);
-      return (
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, padding: "2px 7px", borderRadius: 10, background: bg, color: c, fontWeight: 500 }}>
-          <span style={{ width: 5, height: 5, borderRadius: "50%", background: c }} />
-          {s.replace(/_/g, " ")}
-        </span>
-      );
-    } },
-    { key: "originated", label: "Originated", mono: true },
-  ];
+
+  const columns = useMemo<SaasDataTableColumn<LoanRow>[]>(() => [
+    { key: "loanId",   label: "Loan ID",  width: 110, kind: "string", mono: true },
+    { key: "borrower", label: "Borrower", width: 140, kind: "string" },
+    { key: "state",    label: "State",    width: 72,  kind: "enum",   mono: true },
+    { key: "product",  label: "Product",  width: 130, kind: "enum",
+      enumLabels: { personal: "Personal", consolidation: "Consolidation", auto: "Auto-secured", home: "Home improvement" } },
+    { key: "channel",  label: "Channel",  width: 120, kind: "enum",
+      enumLabels: { direct_mail: "Direct mail", paid_search: "Paid search", affiliate: "Affiliate", organic: "Organic", partner: "Partner API" } },
+    { key: "amount",   label: "Amount",   width: 100, kind: "money",  align: "right", mono: true },
+    { key: "balance",  label: "Balance",  width: 100, kind: "money",  align: "right", mono: true },
+    { key: "fico",     label: "FICO",     width: 72,  kind: "number", align: "right", mono: true,
+      render: (v) => <span style={{ color: Number(v) < 650 ? P.bad : P.sub }}>{String(v)}</span> },
+    { key: "ficoBand", label: "Band",     width: 70,  kind: "enum",   mono: true,
+      render: (v) => {
+        const color = FICO_SWATCH[String(v)] || P.accent;
+        return (
+          <span style={{
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            width: 20, height: 20, borderRadius: 4, background: color,
+            color: "#fff", fontSize: 11, fontWeight: 700,
+          }}>{String(v)}</span>
+        );
+      },
+    },
+    { key: "rate",     label: "APR",      width: 75,  kind: "rate",   align: "right", mono: true,
+      format: (v) => `${Number(v).toFixed(2)}%` },
+    { key: "term",     label: "Term",     width: 70,  kind: "number", align: "right", mono: true,
+      format: (v) => `${v}m` },
+    { key: "income",   label: "Income",   width: 100, kind: "money",  align: "right", mono: true },
+    { key: "dti",      label: "DTI",      width: 70,  kind: "rate",   align: "right", mono: true },
+    { key: "status",   label: "Status",   width: 120, kind: "enum",
+      enumLabels: {
+        current: "Current", late_30: "30 days late", late_60: "60 days late",
+        late_90: "90+ days late", paid_off: "Paid off", charged_off: "Charged off",
+      },
+      render: (v) => {
+        const s = String(v);
+        const c = statusTone(s, P.ok, P.warn, P.bad, P.dim);
+        const bg = statusSoft(s, P.okSoft, P.warnSoft, P.badSoft, P.elev);
+        return (
+          <span style={{
+            display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11,
+            padding: "2px 7px", borderRadius: 10, background: bg, color: c, fontWeight: 500,
+          }}>
+            <span style={{ width: 5, height: 5, borderRadius: "50%", background: c }} />
+            {s.replace(/_/g, " ")}
+          </span>
+        );
+      },
+    },
+    { key: "originated", label: "Originated", width: 110, kind: "date", mono: true },
+    { key: "lastPay",    label: "Last pay",   width: 110, kind: "date", mono: true },
+    { key: "autopay",    label: "Autopay",    width: 85,  kind: "bool", align: "center" },
+  ], [P]);
+
+  const loanRows = rows as unknown as LoanRow[];
+
+  if (loading && loanRows.length === 0) {
+    return (
+      <div style={{
+        background: P.card, border: `1px solid ${P.border}`, borderRadius: 10,
+        padding: 40, textAlign: "center", color: P.dim, fontSize: 12,
+      }}>Loading loan book…</div>
+    );
+  }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16 }}>
-        <div>
-          <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.01em" }}>Loan book</div>
-          <div style={{ fontSize: 12, color: P.sub, marginTop: 2 }}>
-            Loan-level detail · showing {rows.length.toLocaleString()} rows · sort any column
-          </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, height: "calc(100vh - 150px)" }}>
+      <div>
+        <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.01em" }}>Loan book</div>
+        <div style={{ fontSize: 12, color: P.sub, marginTop: 2 }}>
+          Loan-level detail · virtualized · sort, filter, or search any column
         </div>
-        <input
-          value={search} onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search borrower or loan id…"
-          style={{
-            padding: "6px 10px", fontSize: 12, background: P.elev, border: `1px solid ${P.border}`,
-            color: P.text, borderRadius: 6, outline: "none", fontFamily: P.sans, width: 260,
-          }}
-        />
       </div>
-      <div style={{ ...cardStyle, overflow: "hidden" }}>
-        <div style={{ maxHeight: "calc(100vh - 220px)", overflow: "auto" }}>
-          <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
-            <thead style={{ position: "sticky", top: 0, background: P.elev, zIndex: 1 }}>
-              <tr style={{ color: P.dim }}>
-                {cols.map((c) => (
-                  <th key={c.key}
-                    onClick={() => onSort(c.key)}
-                    style={{
-                      textAlign: c.align ?? "left", padding: "10px 14px",
-                      fontWeight: 500, fontSize: 11, cursor: "pointer",
-                      borderBottom: `1px solid ${P.border}`, userSelect: "none",
-                      color: sortKey === c.key ? P.accent : P.dim,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {c.label} {sortKey === c.key ? (sortDir === "asc" ? "↑" : "↓") : ""}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={cols.length} style={{ padding: "40px 14px", textAlign: "center", color: P.dim }}>Loading…</td></tr>
-              ) : rows.length === 0 ? (
-                <tr><td colSpan={cols.length} style={{ padding: "40px 14px", textAlign: "center", color: P.dim }}>No loans match your filters.</td></tr>
-              ) : rows.map((row, i) => (
-                <tr key={String(row.loanId) + i}
-                  onClick={() => drill.open({
-                    kind: "row", id: `loan_${row.loanId}`,
-                    title: `${row.loanId} — ${row.borrower}`,
-                    value: fmtMoneyFull(row.amount),
-                    subvalue: `FICO ${row.fico} · ${row.state} · ${row.originated}`,
-                    breadcrumb: "Loans / Loan",
-                    stats: [
-                      ["Amount", fmtMoneyFull(row.amount)],
-                      ["Balance", fmtMoneyFull(row.balance)],
-                      ["FICO", String(row.fico)],
-                      ["APR", Number(row.rate).toFixed(2) + "%"],
-                      ["Term", String(row.term) + " mo"],
-                      ["State", String(row.state)],
-                      ["Status", String(row.status).replace(/_/g, " ")],
-                      ["Originated", String(row.originated)],
-                    ],
-                  })}
-                  style={{ borderTop: `1px solid ${P.border}`, cursor: "pointer" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = P.elev)}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                >
-                  {cols.map((c) => (
-                    <td key={c.key} style={{
-                      padding: "8px 14px",
-                      textAlign: c.align ?? "left",
-                      fontFamily: c.mono ? P.mono : P.sans,
-                      color: c.key === "loanId" ? P.sub : P.text,
-                      whiteSpace: "nowrap",
-                    }}>
-                      {c.render ? c.render(row[c.key], row) : String(row[c.key] ?? "")}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <SaasDataTable<LoanRow>
+          columns={columns}
+          rows={loanRows}
+          rowKey={(r) => r.loanId}
+          defaultSort={{ key: "originated", dir: "desc" }}
+          searchPlaceholder="Search all columns…"
+          widthStorageKey="loan-portfolio.loans-table.widths"
+          aggregates={(visibleRows) => {
+            if (visibleRows.length === 0) return { rows: "0" };
+            const amt = visibleRows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+            const bal = visibleRows.reduce((s, r) => s + (Number(r.balance) || 0), 0);
+            const ficoAvg = Math.round(visibleRows.reduce((s, r) => s + (Number(r.fico) || 0), 0) / visibleRows.length);
+            return {
+              rows: visibleRows.length.toLocaleString(),
+              "total amount": fmtMoney(amt),
+              "total balance": fmtMoney(bal),
+              "avg fico": String(ficoAvg),
+            };
+          }}
+          onRowClick={(row) => drill.open({
+            kind: "row",
+            id: `loan_${row.loanId}`,
+            title: `${row.loanId} — ${row.borrower}`,
+            value: fmtMoneyFull(row.amount),
+            subvalue: `FICO ${row.fico} · ${row.state} · ${row.originated}`,
+            breadcrumb: "Loans / Loan",
+            stats: [
+              ["Amount", fmtMoneyFull(row.amount)],
+              ["Balance", fmtMoneyFull(row.balance)],
+              ["FICO", String(row.fico)],
+              ["APR", Number(row.rate).toFixed(2) + "%"],
+              ["Term", String(row.term) + " mo"],
+              ["State", row.state],
+              ["Status", row.status.replace(/_/g, " ")],
+              ["Originated", row.originated],
+              ["Last pay", row.lastPay],
+            ],
+          })}
+        />
       </div>
     </div>
   );
