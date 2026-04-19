@@ -3634,6 +3634,885 @@ export function Tooltip(props: {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Refined SaaS v2 — opinionated shell primitives
+// ═══════════════════════════════════════════════════════════════════════════
+// A second styling track alongside the CSS-vars-based components above. These
+// primitives drive inline styles off a Palette object so customers can pass an
+// accentColor at the ShellLayout root and every nested chrome element (KPI
+// top-line, active nav, filter chip, loading dot) picks it up without CSS var
+// leaks. Pair with <PaletteProvider>; inside that, call usePalette() from any
+// descendant.
+
+export type SaasPaletteTheme = "dark" | "light";
+
+export type SaasPalette = {
+  bg: string; sidebar: string; card: string; elev: string;
+  text: string; sub: string; dim: string; faint: string;
+  border: string; rule: string;
+  accent: string; accentSoft: string;
+  ok: string; okSoft: string;
+  warn: string; warnSoft: string;
+  bad: string; badSoft: string;
+  grad2: string;
+  sans: string; mono: string;
+};
+
+// Derive a soft alpha from a hex accent. Falls back to palette default.
+function alphaOf(hex: string, alpha: number): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+export function buildPalette(
+  theme: SaasPaletteTheme,
+  opts?: { accent?: string },
+): SaasPalette {
+  const base = theme === "dark"
+    ? {
+        bg: "#09090b", sidebar: "#0a0a0c", card: "#111113", elev: "#16161a",
+        text: "#f4f4f5", sub: "#a1a1aa", dim: "#71717a", faint: "#52525b",
+        border: "#1f1f23", rule: "#27272a",
+        accent: "#0A99FF", accentSoft: "rgba(10,153,255,0.14)",
+        ok: "#10b981", okSoft: "rgba(16,185,129,0.12)",
+        warn: "#f59e0b", warnSoft: "rgba(245,158,11,0.12)",
+        bad: "#ef4444", badSoft: "rgba(239,68,68,0.12)",
+        grad2: "#8B5CF6",
+      }
+    : {
+        bg: "#fafafa", sidebar: "#ffffff", card: "#ffffff", elev: "#f4f4f5",
+        text: "#09090b", sub: "#52525b", dim: "#71717a", faint: "#a1a1aa",
+        border: "#e4e4e7", rule: "#e4e4e7",
+        accent: "#0A84D0", accentSoft: "rgba(10,132,208,0.10)",
+        ok: "#059669", okSoft: "rgba(5,150,105,0.10)",
+        warn: "#d97706", warnSoft: "rgba(217,119,6,0.10)",
+        bad: "#dc2626", badSoft: "rgba(220,38,38,0.10)",
+        grad2: "#7C3AED",
+      };
+  const accent = opts?.accent ?? base.accent;
+  const accentSoft = opts?.accent
+    ? alphaOf(opts.accent, theme === "dark" ? 0.14 : 0.10)
+    : base.accentSoft;
+  return {
+    ...base,
+    accent,
+    accentSoft,
+    sans: '"Inter", system-ui, sans-serif',
+    mono: '"JetBrains Mono", ui-monospace, monospace',
+  };
+}
+
+const PaletteContext = React.createContext<SaasPalette | null>(null);
+
+export function PaletteProvider(props: { value: SaasPalette; children: React.ReactNode }) {
+  return <PaletteContext.Provider value={props.value}>{props.children}</PaletteContext.Provider>;
+}
+
+export function usePalette(): SaasPalette {
+  const v = React.useContext(PaletteContext);
+  if (!v) throw new Error("usePalette() requires a <PaletteProvider> ancestor (typically provided by <ShellLayout>).");
+  return v;
+}
+
+// Keyframes used by skeletons, drill drawer, cache popover. Injected once per
+// document by any component that mounts. Safe to re-inject — browsers dedupe.
+const SAAS_KEYFRAMES = `
+  @keyframes saasShimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  @keyframes saasPulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+  @keyframes saasFade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes saasSlide { from { transform: translateX(100%); } to { transform: translateX(0); } }
+`;
+
+function useSaasKeyframes() {
+  useEffect(() => {
+    const id = "saas-v2-keyframes";
+    if (document.getElementById(id)) return;
+    const s = document.createElement("style");
+    s.id = id;
+    s.textContent = SAAS_KEYFRAMES;
+    document.head.appendChild(s);
+  }, []);
+}
+
+// ── Sparkline ──────────────────────────────────────────────────────────────
+
+export function Sparkline(props: {
+  values: number[];
+  color?: string;
+  width?: number;
+  height?: number;
+}) {
+  const P = React.useContext(PaletteContext);
+  const color = props.color ?? P?.accent ?? "#0A99FF";
+  const w = props.width ?? 90;
+  const h = props.height ?? 32;
+  if (!props.values.length) return <svg width={w} height={h} />;
+  const mx = Math.max(...props.values);
+  const mn = Math.min(...props.values);
+  const rng = mx - mn || 1;
+  const pts = props.values
+    .map((v, i) => `${(i / (props.values.length - 1)) * w},${h - ((v - mn) / rng) * h}`)
+    .join(" ");
+  const last = props.values[props.values.length - 1];
+  return (
+    <svg width={w} height={h} style={{ display: "block", overflow: "visible" }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={w} cy={h - ((last - mn) / rng) * h} r={2.5} fill={color} />
+    </svg>
+  );
+}
+
+// ── SkeletonShimmer ────────────────────────────────────────────────────────
+
+export function SkeletonShimmer(props: {
+  width?: number | string;
+  height?: number | string;
+  radius?: number;
+  style?: React.CSSProperties;
+}) {
+  const P = usePalette();
+  useSaasKeyframes();
+  return (
+    <div
+      style={{
+        width: props.width ?? "100%",
+        height: props.height ?? 16,
+        borderRadius: props.radius ?? 4,
+        background: `linear-gradient(90deg, ${P.elev} 0%, ${P.border} 50%, ${P.elev} 100%)`,
+        backgroundSize: "200% 100%",
+        animation: "saasShimmer 1.4s ease-in-out infinite",
+        ...(props.style ?? {}),
+      }}
+    />
+  );
+}
+
+// ── Breadcrumb ─────────────────────────────────────────────────────────────
+
+export function Breadcrumb(props: { trail: string[] }) {
+  const P = usePalette();
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {props.trail.map((t, i) => (
+        <React.Fragment key={i}>
+          {i > 0 ? <span style={{ color: P.faint }}>/</span> : null}
+          <span style={{ fontSize: 12, color: i === props.trail.length - 1 ? P.text : P.dim }}>{t}</span>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+// ── SaasKpiCard ────────────────────────────────────────────────────────────
+
+export function SaasKpiCard(props: {
+  title: string;
+  value: React.ReactNode;
+  delta?: string;
+  up?: boolean;
+  sub?: string;
+  spark?: number[];
+  accent?: string;
+  loading?: boolean;
+  onClick?: () => void;
+}) {
+  const P = usePalette();
+  const accent = props.accent ?? P.accent;
+  const clickable = Boolean(props.onClick);
+  return (
+    <div
+      onClick={props.onClick}
+      onMouseEnter={(e) => {
+        if (!clickable) return;
+        e.currentTarget.style.transform = "translateY(-1px)";
+        e.currentTarget.style.borderColor = P.rule;
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.transform = "none";
+        e.currentTarget.style.borderColor = P.border;
+      }}
+      style={{
+        background: P.card,
+        border: `1px solid ${P.border}`,
+        borderRadius: 10,
+        padding: 16,
+        position: "relative",
+        overflow: "hidden",
+        cursor: clickable ? "pointer" : "default",
+        transition: "transform 0.15s, border-color 0.15s",
+      }}
+    >
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg, ${accent}, transparent)` }} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: P.sub, fontWeight: 500 }}>{props.title}</div>
+        {!props.loading && props.spark && props.spark.length > 0
+          ? <Sparkline values={props.spark} color={accent} />
+          : null}
+      </div>
+      {props.loading ? (
+        <>
+          <SkeletonShimmer width={120} height={28} radius={6} />
+          <div style={{ height: 10 }} />
+          <SkeletonShimmer width={140} height={12} />
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1, marginBottom: 8 }}>{props.value}</div>
+          {(props.delta || props.sub) ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+              {props.delta ? (
+                <span style={{
+                  color: props.up ? P.ok : P.bad,
+                  background: props.up ? P.okSoft : P.badSoft,
+                  padding: "2px 7px", borderRadius: 4,
+                  fontFamily: P.mono, fontWeight: 500,
+                }}>
+                  {props.up ? "↑" : "↓"} {props.delta}
+                </span>
+              ) : null}
+              {props.sub ? <span style={{ color: P.dim }}>{props.sub}</span> : null}
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── CachePopover ───────────────────────────────────────────────────────────
+
+export function CachePopover(props: {
+  isLoading: boolean;
+  rowCount?: number | null;
+  cache?: {
+    loadTimeMs: number | null;
+    fromCache: boolean;
+    sourceLabel: string;
+    cacheTtlHours: number;
+  } | null;
+  onRefresh: () => Promise<void> | void;
+}) {
+  const P = usePalette();
+  useSaasKeyframes();
+  const [open, setOpen] = useState(false);
+  const loadSec = props.cache?.loadTimeMs != null ? (props.cache.loadTimeMs / 1000).toFixed(2) + "s" : "—";
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          display: "flex", alignItems: "center", gap: 6, fontSize: 11, padding: "6px 10px",
+          background: props.isLoading ? P.accentSoft : P.okSoft,
+          color: props.isLoading ? P.accent : P.ok,
+          borderRadius: 6, fontFamily: P.mono,
+          border: `1px solid ${open ? (props.isLoading ? P.accent : P.ok) : "transparent"}`,
+          cursor: "pointer",
+        }}
+      >
+        <span style={{
+          width: 6, height: 6, borderRadius: "50%",
+          background: props.isLoading ? P.accent : P.ok,
+          boxShadow: `0 0 8px ${props.isLoading ? P.accent : P.ok}`,
+          animation: props.isLoading ? "saasPulse 0.9s ease-in-out infinite" : "none",
+        }} />
+        {props.isLoading ? "Loading…" : props.cache?.fromCache ? "Cached" : "Live"}
+        <span style={{ marginLeft: 2, opacity: 0.7, fontSize: 9 }}>▾</span>
+      </button>
+      {open ? (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+          <div style={{
+            position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 50,
+            width: 320, background: P.card, border: `1px solid ${P.border}`, borderRadius: 10,
+            boxShadow: "0 20px 60px rgba(0,0,0,0.35)", padding: 14, fontFamily: P.sans, color: P.text,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: P.ok, boxShadow: `0 0 10px ${P.ok}` }} />
+                <div style={{ fontSize: 13, fontWeight: 600 }}>DuckDB WASM</div>
+              </div>
+              <div style={{ fontSize: 10, color: P.dim, fontFamily: P.mono }}>v1.29.0</div>
+            </div>
+            <div style={{ fontSize: 11, color: P.sub, lineHeight: 1.5, marginBottom: 12 }}>
+              Query results cached in-browser via IndexedDB. Subsequent loads of the same
+              slice render instantly without hitting the warehouse.
+            </div>
+            {([
+              ["Rows cached", props.rowCount != null ? props.rowCount.toLocaleString() : "—"],
+              ["Source", props.cache?.sourceLabel ?? "—"],
+              ["Load time", loadSec],
+              ["From cache", props.cache?.fromCache ? "yes" : "no"],
+              ["TTL", `${props.cache?.cacheTtlHours ?? 24}h`],
+            ] as const).map(([k, v]) => (
+              <div key={k} style={{
+                display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                padding: "6px 0", borderTop: `1px solid ${P.border}`,
+              }}>
+                <div style={{ fontSize: 11, color: P.sub }}>{k}</div>
+                <div style={{ fontSize: 12, fontWeight: 500, fontFamily: P.mono }}>{v}</div>
+              </div>
+            ))}
+            <button
+              onClick={async () => { await props.onRefresh(); setOpen(false); }}
+              style={{
+                width: "100%", marginTop: 12, fontSize: 11, padding: "6px 10px", borderRadius: 5,
+                background: P.accent, border: `1px solid ${P.accent}`, color: "#fff",
+                cursor: "pointer", fontFamily: P.sans, fontWeight: 500,
+              }}
+            >
+              Clear cache & reload
+            </button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+// ── FilterAccordion ────────────────────────────────────────────────────────
+
+export type FilterAccordionOption = {
+  id: string;
+  label: string;
+  hint?: string;
+  swatch?: string;
+};
+
+export type FilterAccordionGroup = {
+  id: string;
+  label: string;
+  options: FilterAccordionOption[];
+};
+
+export function FilterAccordion(props: {
+  groups: FilterAccordionGroup[];
+  selected: Record<string, string[]>;
+  onChange: React.Dispatch<React.SetStateAction<Record<string, string[]>>>;
+  search: string;
+  onSearchChange: (s: string) => void;
+  defaultExpanded?: Record<string, boolean>;
+}) {
+  const P = usePalette();
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(props.defaultExpanded ?? {});
+  const [groupSearch, setGroupSearch] = useState<Record<string, string>>({});
+
+  const toggle = (gid: string, optId: string) => {
+    props.onChange((f) => {
+      const cur = f[gid] || [];
+      const next = cur.includes(optId) ? cur.filter((x) => x !== optId) : [...cur, optId];
+      const copy = { ...f };
+      if (next.length === 0) delete copy[gid]; else copy[gid] = next;
+      return copy;
+    });
+  };
+  const clearGroup = (gid: string) => props.onChange((f) => { const c = { ...f }; delete c[gid]; return c; });
+
+  const q = props.search.toLowerCase();
+
+  return (
+    <>
+      <div style={{ padding: "0 10px 8px", position: "relative" }}>
+        <input
+          value={props.search}
+          onChange={(e) => props.onSearchChange(e.target.value)}
+          placeholder="Search filters…"
+          style={{
+            width: "100%", padding: "6px 10px 6px 26px", fontSize: 11,
+            background: P.elev, border: `1px solid ${P.border}`, color: P.text,
+            borderRadius: 5, outline: "none", fontFamily: P.sans,
+          }}
+        />
+        <span style={{ position: "absolute", left: 19, top: 6, fontSize: 11, color: P.faint, pointerEvents: "none" }}>⌕</span>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", marginRight: -4, paddingRight: 4 }}>
+        {props.groups.map((grp) => {
+          const selectedIds = props.selected[grp.id] || [];
+          const isOpen = expanded[grp.id] || selectedIds.length > 0 || q.length > 0 || (groupSearch[grp.id] || "").length > 0;
+          const matches = q
+            ? grp.options.filter((o) => o.label.toLowerCase().includes(q) || grp.label.toLowerCase().includes(q))
+            : grp.options;
+          if (q && matches.length === 0 && !grp.label.toLowerCase().includes(q)) return null;
+          const globalFiltered = q && !grp.label.toLowerCase().includes(q) ? matches : grp.options;
+          const hasGroupSearch = grp.options.length >= 8;
+          const gq = (groupSearch[grp.id] || "").toLowerCase();
+          const visible = gq
+            ? globalFiltered.filter((o) => o.label.toLowerCase().includes(gq))
+            : globalFiltered;
+
+          return (
+            <div key={grp.id} style={{ marginBottom: 2 }}>
+              <button
+                onClick={() => setExpanded((e) => ({ ...e, [grp.id]: !e[grp.id] }))}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center",
+                  padding: "6px 10px", background: "transparent",
+                  border: "none", cursor: "pointer", color: P.sub, textAlign: "left",
+                  fontSize: 12, fontFamily: P.sans, borderRadius: 5, gap: 8,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = P.elev)}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                <span style={{
+                  fontSize: 9, color: P.faint, width: 8, display: "inline-block",
+                  transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s",
+                }}>▶</span>
+                <span style={{ flex: 1, fontWeight: 500, color: P.text }}>{grp.label}</span>
+                {selectedIds.length > 0 ? (
+                  <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: P.accent, color: "#fff", fontFamily: P.mono, fontWeight: 600 }}>
+                    {selectedIds.length}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 10, color: P.faint, fontFamily: P.mono }}>{grp.options.length}</span>
+                )}
+              </button>
+              {isOpen ? (
+                <div style={{
+                  padding: "2px 6px 8px 22px",
+                  maxHeight: visible.length > 7 ? 200 : "auto",
+                  overflowY: visible.length > 7 ? "auto" : "visible",
+                }}>
+                  {hasGroupSearch ? (
+                    <div style={{ position: "relative", marginBottom: 4, marginTop: 2 }}>
+                      <input
+                        value={groupSearch[grp.id] || ""}
+                        onChange={(e) => setGroupSearch((s) => ({ ...s, [grp.id]: e.target.value }))}
+                        placeholder={`Search ${grp.label.toLowerCase()}…`}
+                        style={{
+                          width: "100%", padding: "4px 22px 4px 22px", fontSize: 11,
+                          background: P.elev, border: `1px solid ${P.border}`, color: P.text,
+                          borderRadius: 4, outline: "none", fontFamily: P.sans,
+                        }}
+                      />
+                      <span style={{ position: "absolute", left: 7, top: 4, fontSize: 10, color: P.faint, pointerEvents: "none" }}>⌕</span>
+                    </div>
+                  ) : null}
+                  {selectedIds.length > 0 ? (
+                    <button onClick={() => clearGroup(grp.id)} style={{
+                      fontSize: 10, color: P.dim, background: "none", border: "none",
+                      cursor: "pointer", padding: "2px 4px", marginBottom: 2, fontFamily: P.sans,
+                    }}>Clear {grp.label.toLowerCase()}</button>
+                  ) : null}
+                  {visible.length === 0 ? (
+                    <div style={{ fontSize: 11, color: P.faint, padding: "6px 4px", fontStyle: "italic" }}>No matches</div>
+                  ) : null}
+                  {visible.map((opt) => {
+                    const checked = selectedIds.includes(opt.id);
+                    return (
+                      <label key={opt.id} style={{
+                        display: "flex", alignItems: "center", gap: 8,
+                        padding: "4px 6px", borderRadius: 4, cursor: "pointer", fontSize: 12,
+                        color: checked ? P.text : P.sub,
+                        background: checked ? P.accentSoft : "transparent",
+                      }}
+                        onMouseEnter={(e) => { if (!checked) e.currentTarget.style.background = P.elev; }}
+                        onMouseLeave={(e) => { if (!checked) e.currentTarget.style.background = "transparent"; }}
+                      >
+                        <span style={{
+                          width: 13, height: 13, borderRadius: 3,
+                          border: `1px solid ${checked ? P.accent : P.border}`,
+                          background: checked ? P.accent : "transparent",
+                          display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                        }}>
+                          {checked ? <span style={{ color: "#fff", fontSize: 9, lineHeight: 1, fontWeight: 700 }}>✓</span> : null}
+                        </span>
+                        <input type="checkbox" checked={checked} onChange={() => toggle(grp.id, opt.id)} style={{ display: "none" }} />
+                        {opt.swatch ? <span style={{ width: 7, height: 7, borderRadius: 2, background: opt.swatch, flexShrink: 0 }} /> : null}
+                        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {opt.label}
+                        </span>
+                        {opt.hint != null ? (
+                          <span style={{ fontFamily: P.mono, fontSize: 10, color: P.faint, flexShrink: 0 }}>{opt.hint}</span>
+                        ) : null}
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ── Sidebar ────────────────────────────────────────────────────────────────
+
+export type SidebarNavItem = {
+  id: string;
+  label: string;
+  icon?: React.ReactNode;
+  badge?: React.ReactNode;
+};
+
+export function Sidebar(props: {
+  logo?: { title: string; subtitle?: string; mark?: React.ReactNode };
+  navItems: SidebarNavItem[];
+  activeView: string;
+  onViewChange: (id: string) => void;
+  dateRangeSlot?: React.ReactNode;
+  filterGroups?: FilterAccordionGroup[];
+  filters?: Record<string, string[]>;
+  onFiltersChange?: React.Dispatch<React.SetStateAction<Record<string, string[]>>>;
+  humanizeFilter?: (groupId: string, value: string) => string;
+  theme?: SaasPaletteTheme;
+  onThemeChange?: (t: SaasPaletteTheme) => void;
+  footer?: React.ReactNode;
+  width?: number;
+}) {
+  const P = usePalette();
+  const [filterSearch, setFilterSearch] = useState("");
+  const width = props.width ?? 240;
+  const activeFilterCount = Object.values(props.filters ?? {}).reduce((a, b) => a + b.length, 0);
+  const humanize = props.humanizeFilter ?? ((_g, v) => v);
+
+  return (
+    <div style={{
+      width, background: P.sidebar, borderRight: `1px solid ${P.border}`,
+      padding: "20px 10px", display: "flex", flexDirection: "column", gap: 2,
+      position: "sticky", top: 0, height: "100vh", zIndex: 50, flexShrink: 0,
+    }}>
+      {props.logo ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px 20px" }}>
+          {props.logo.mark ?? (
+            <div style={{
+              width: 28, height: 28, borderRadius: 7,
+              background: `linear-gradient(135deg, ${P.accent}, ${P.grad2})`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 13, fontWeight: 700, color: "#fff",
+            }}>◆</div>
+          )}
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>{props.logo.title}</div>
+            {props.logo.subtitle ? <div style={{ fontSize: 11, color: P.dim }}>{props.logo.subtitle}</div> : null}
+          </div>
+        </div>
+      ) : null}
+
+      <SidebarSectionLabel>Views</SidebarSectionLabel>
+      {props.navItems.map((n) => {
+        const active = props.activeView === n.id;
+        return (
+          <button key={n.id} onClick={() => props.onViewChange(n.id)} style={{
+            display: "flex", alignItems: "center", gap: 10, textAlign: "left",
+            padding: "8px 10px", borderRadius: 6,
+            background: active ? P.accentSoft : "transparent",
+            color: active ? P.accent : P.sub,
+            border: "none", cursor: "pointer", fontSize: 13,
+            fontWeight: active ? 500 : 400, fontFamily: P.sans,
+          }}
+            onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = P.elev; }}
+            onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+          >
+            {n.icon ? <span style={{ width: 14, textAlign: "center", opacity: 0.8 }}>{n.icon}</span> : null}
+            <span style={{ flex: 1 }}>{n.label}</span>
+            {n.badge != null ? (
+              <span style={{
+                fontSize: 10, padding: "1px 6px", borderRadius: 8,
+                background: active ? P.accent + "30" : P.elev,
+                color: active ? P.accent : P.dim,
+                fontFamily: P.mono, fontWeight: 500,
+              }}>{n.badge}</span>
+            ) : null}
+          </button>
+        );
+      })}
+
+      {props.dateRangeSlot ? (
+        <div style={{ padding: "14px 10px 4px" }}>
+          <SidebarSectionLabel>Date range</SidebarSectionLabel>
+          {props.dateRangeSlot}
+        </div>
+      ) : null}
+
+      {props.filterGroups && props.filters && props.onFiltersChange ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 10px 6px" }}>
+            <div style={{ fontSize: 10, color: P.faint, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>
+              Filters {activeFilterCount > 0 ? <span style={{ color: P.accent, marginLeft: 4 }}>· {activeFilterCount}</span> : null}
+            </div>
+            {activeFilterCount > 0 ? (
+              <button onClick={() => props.onFiltersChange!({})} style={{
+                fontSize: 10, color: P.dim, background: "none", border: "none", cursor: "pointer",
+                fontFamily: P.sans, padding: "2px 4px",
+              }}>Clear</button>
+            ) : null}
+          </div>
+          {activeFilterCount > 0 ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "0 10px 8px" }}>
+              {Object.entries(props.filters).map(([gid, opts]) => {
+                const grp = props.filterGroups!.find((g) => g.id === gid);
+                if (!grp || !opts?.length) return null;
+                const single = opts.length === 1;
+                const label = single ? humanize(gid, opts[0]) : `${grp.label} · ${opts.length}`;
+                return (
+                  <button key={gid}
+                    onClick={() => props.onFiltersChange!((f) => { const c = { ...f }; delete c[gid]; return c; })}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: 5,
+                      padding: "3px 6px 3px 7px", borderRadius: 10, fontSize: 10,
+                      background: P.accentSoft, color: P.accent,
+                      border: `1px solid ${P.accent}30`, cursor: "pointer",
+                      lineHeight: 1.4, maxWidth: "100%",
+                    }}
+                  >
+                    <span style={{ fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+                    <span style={{ fontSize: 11, opacity: 0.7 }}>×</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+
+          <FilterAccordion
+            groups={props.filterGroups}
+            selected={props.filters}
+            onChange={props.onFiltersChange}
+            search={filterSearch}
+            onSearchChange={setFilterSearch}
+          />
+        </>
+      ) : null}
+
+      <div style={{ marginTop: "auto", paddingTop: 14, borderTop: `1px solid ${P.border}`, display: "flex", flexDirection: "column", gap: 10 }}>
+        {props.theme && props.onThemeChange ? (
+          <div style={{ display: "flex", gap: 3, background: P.elev, borderRadius: 6, padding: 3 }}>
+            {(["dark", "light"] as const).map((tk) => (
+              <button key={tk}
+                onClick={() => props.onThemeChange!(tk)}
+                style={{
+                  flex: 1, padding: "5px 8px", fontSize: 11, border: "none", borderRadius: 4, cursor: "pointer",
+                  background: props.theme === tk ? P.card : "transparent",
+                  color: props.theme === tk ? P.text : P.sub,
+                  fontFamily: P.sans, textTransform: "capitalize",
+                  fontWeight: props.theme === tk ? 500 : 400,
+                }}
+              >{tk === "dark" ? "◐ Dark" : "◑ Light"}</button>
+            ))}
+          </div>
+        ) : null}
+        {props.footer ? (
+          <div style={{ fontSize: 10, color: P.dim, fontFamily: P.mono, lineHeight: 1.5, padding: "0 4px" }}>
+            {props.footer}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SidebarSectionLabel({ children }: { children: React.ReactNode }) {
+  const P = usePalette();
+  return (
+    <div style={{
+      fontSize: 10, color: P.faint, letterSpacing: "0.08em",
+      textTransform: "uppercase", padding: "8px 10px 6px", fontWeight: 600,
+    }}>
+      {children}
+    </div>
+  );
+}
+
+// ── ShellLayout ────────────────────────────────────────────────────────────
+
+export function ShellLayout(props: {
+  palette: SaasPalette;
+  sidebar: React.ReactNode;
+  title?: string;
+  breadcrumb?: string[];
+  headerRight?: React.ReactNode;
+  children: React.ReactNode;
+  mainPadding?: string;
+}) {
+  const P = props.palette;
+  useSaasKeyframes();
+  return (
+    <PaletteProvider value={P}>
+      <div style={{
+        background: P.bg, color: P.text, fontFamily: P.sans, fontSize: 14,
+        minHeight: "100vh", display: "flex",
+      }}>
+        {props.sidebar}
+        <div style={{ flex: 1, minWidth: 0, padding: props.mainPadding ?? "28px 36px 48px" }}>
+          {(props.title || props.breadcrumb || props.headerRight) ? (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+              <div>
+                {props.breadcrumb ? <div style={{ marginBottom: 6 }}><Breadcrumb trail={props.breadcrumb} /></div> : null}
+                {props.title ? (
+                  <h1 style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em", margin: 0 }}>{props.title}</h1>
+                ) : null}
+              </div>
+              {props.headerRight ? <div style={{ display: "flex", gap: 8, alignItems: "center" }}>{props.headerRight}</div> : null}
+            </div>
+          ) : null}
+          {props.children}
+        </div>
+      </div>
+    </PaletteProvider>
+  );
+}
+
+// ── Drill drawer + provider ────────────────────────────────────────────────
+
+export type DrillEntity = {
+  kind: "kpi" | "row" | "chart";
+  id: string;
+  title: string;
+  value?: React.ReactNode;
+  subvalue?: string;
+  breadcrumb?: string;
+  sql?: string;
+  stats?: Array<[string, string]>;
+  breakdown?: Array<{ label: string; value: number }>;
+  narrative?: React.ReactNode;
+  extra?: React.ReactNode;
+};
+
+type DrillContextValue = {
+  open: (e: DrillEntity) => void;
+  close: () => void;
+};
+
+const DrillContext = React.createContext<DrillContextValue | null>(null);
+
+export function DrillProvider(props: { children: React.ReactNode }) {
+  const [entity, setEntity] = useState<DrillEntity | null>(null);
+  const ctx = useMemo<DrillContextValue>(
+    () => ({ open: (e) => setEntity(e), close: () => setEntity(null) }),
+    [],
+  );
+  return (
+    <DrillContext.Provider value={ctx}>
+      {props.children}
+      <DrillDrawer entity={entity} onClose={ctx.close} />
+    </DrillContext.Provider>
+  );
+}
+
+export function useDrill(): DrillContextValue {
+  const v = React.useContext(DrillContext);
+  if (!v) throw new Error("useDrill() requires a <DrillProvider> ancestor.");
+  return v;
+}
+
+function DrillDrawer({ entity, onClose }: { entity: DrillEntity | null; onClose: () => void }) {
+  const P = usePalette();
+  useSaasKeyframes();
+  useEffect(() => {
+    if (!entity) return;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = "";
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [entity, onClose]);
+  if (!entity) return null;
+  const maxBar = entity.breakdown ? Math.max(...entity.breakdown.map((b) => Math.abs(b.value))) || 1 : 1;
+  return (
+    <>
+      <div onClick={onClose} style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+        zIndex: 1500, backdropFilter: "blur(4px)", animation: "saasFade 0.18s ease-out",
+      }} />
+      <div style={{
+        position: "fixed", top: 0, right: 0, bottom: 0, width: 520, maxWidth: "92vw",
+        background: P.sidebar, zIndex: 1501, color: P.text,
+        boxShadow: "-24px 0 60px rgba(0,0,0,0.35)",
+        display: "flex", flexDirection: "column", fontFamily: P.sans,
+        borderLeft: `1px solid ${P.border}`, animation: "saasSlide 0.22s ease-out",
+      }}>
+        <div style={{ padding: "20px 24px 18px", borderBottom: `1px solid ${P.border}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, fontSize: 11, color: P.dim }}>
+                <span style={{ fontFamily: P.mono, letterSpacing: "0.1em", textTransform: "uppercase", color: P.accent }}>
+                  {entity.kind === "kpi" ? "KPI" : entity.kind === "chart" ? "Chart" : "Row"}
+                </span>
+                <span>·</span>
+                <span>{entity.breadcrumb || "Portfolio"}</span>
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em", lineHeight: 1.3 }}>{entity.title}</div>
+              {entity.value != null ? (
+                <div style={{ fontSize: 32, fontWeight: 600, letterSpacing: "-0.02em", marginTop: 10, color: P.accent }}>
+                  {entity.value}
+                </div>
+              ) : null}
+              {entity.subvalue ? (
+                <div style={{ fontSize: 12, color: P.sub, marginTop: 4, fontFamily: P.mono }}>{entity.subvalue}</div>
+              ) : null}
+            </div>
+            <button onClick={onClose} style={{
+              background: P.elev, border: `1px solid ${P.border}`, borderRadius: 6,
+              padding: "4px 10px", color: P.sub, cursor: "pointer", fontSize: 12, fontFamily: P.sans,
+            }}>ESC</button>
+          </div>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "18px 24px" }}>
+          {entity.narrative ? (
+            <div style={{ fontSize: 13, color: P.sub, lineHeight: 1.55, marginBottom: 20 }}>{entity.narrative}</div>
+          ) : null}
+          {entity.stats && entity.stats.length > 0 ? (
+            <div style={{ marginBottom: 22 }}>
+              <DrillSectionLabel>Computed</DrillSectionLabel>
+              {entity.stats.map(([k, v]) => (
+                <div key={k} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                  padding: "7px 0", borderBottom: `1px solid ${P.border}`, fontSize: 12,
+                }}>
+                  <span style={{ color: P.sub }}>{k}</span>
+                  <span style={{ fontFamily: P.mono, color: P.text }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {entity.breakdown && entity.breakdown.length > 0 ? (
+            <div style={{ marginBottom: 22 }}>
+              <DrillSectionLabel>Breakdown</DrillSectionLabel>
+              {entity.breakdown.map((b) => (
+                <div key={b.label} style={{ marginBottom: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+                    <span style={{ color: P.sub }}>{b.label}</span>
+                    <span style={{ fontFamily: P.mono, color: P.text }}>{typeof b.value === "number" ? b.value.toLocaleString() : b.value}</span>
+                  </div>
+                  <div style={{ height: 4, background: P.elev, borderRadius: 2, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${(Math.abs(b.value) / maxBar) * 100}%`, background: P.accent, borderRadius: 2 }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {entity.sql ? (
+            <div>
+              <DrillSectionLabel>SQL</DrillSectionLabel>
+              <pre style={{
+                margin: 0, padding: 12, background: P.elev, border: `1px solid ${P.border}`,
+                borderRadius: 6, fontSize: 11, fontFamily: P.mono, color: P.sub,
+                whiteSpace: "pre-wrap", lineHeight: 1.5,
+              }}>{entity.sql}</pre>
+            </div>
+          ) : null}
+          {entity.extra ?? null}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function DrillSectionLabel({ children }: { children: React.ReactNode }) {
+  const P = usePalette();
+  return (
+    <div style={{
+      fontSize: 10, color: P.faint, letterSpacing: "0.08em",
+      textTransform: "uppercase", marginBottom: 8, fontWeight: 600,
+    }}>{children}</div>
+  );
+}
+
 declare global {
   interface Window {
     Definite?: DefiniteBridge;
