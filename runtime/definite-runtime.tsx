@@ -4685,6 +4685,681 @@ function DrillSectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SaasDataTable — virtualized, filterable, sortable table
+// ═══════════════════════════════════════════════════════════════════════════
+// Pure client-side table: feed it a rows array (from useSqlQuery or similar)
+// and it handles virtualization, cycle sort, per-column filter popovers,
+// exact-match search, column resize, and an aggregates footer. Built for
+// up-to-~100K rows; for larger sets, pre-filter via useSqlQuery first.
+
+export type SaasDataTableColumnKind =
+  | "string"
+  | "enum"
+  | "number"
+  | "money"
+  | "rate"
+  | "date"
+  | "bool";
+
+export type SaasDataTableColumn<T = Record<string, unknown>> = {
+  key: string;
+  label: string;
+  width: number;
+  align?: "left" | "center" | "right";
+  mono?: boolean;
+  kind: SaasDataTableColumnKind;
+  // Enum → display label map (e.g. { current: "Current", late_30: "30 days late" }).
+  // Used for filter checkbox labels and default cell text.
+  enumLabels?: Record<string, string>;
+  // Override the cell element entirely (wins over `format`).
+  render?: (value: unknown, row: T) => React.ReactNode;
+  // Override text formatting (loses to `render` but used elsewhere, e.g. search).
+  format?: (value: unknown) => string;
+};
+
+export type SaasDataTableSort = { key: string; dir: "asc" | "desc" };
+
+type ColFilter =
+  | { kind: "enum"; values: string[] }
+  | { kind: "range"; min?: number; max?: number };
+
+// Default cell text by column kind. Callers override per-column with `format` or `render`.
+function defaultFormat(col: SaasDataTableColumn, v: unknown): string {
+  if (v == null || v === "") return "—";
+  if (col.format) return col.format(v);
+  const n = Number(v);
+  if (col.kind === "money") {
+    if (!Number.isFinite(n)) return String(v);
+    if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+    if (Math.abs(n) >= 1e3) return `$${Math.round(n / 1e3)}K`;
+    return `$${Math.round(n).toLocaleString()}`;
+  }
+  if (col.kind === "rate") {
+    if (!Number.isFinite(n)) return String(v);
+    // Heuristic: values ≤ 1 are decimal fractions (0.35 → 35%), otherwise already pct.
+    return Math.abs(n) <= 1 ? `${Math.round(n * 100)}%` : `${n.toFixed(1)}%`;
+  }
+  if (col.kind === "number") {
+    if (!Number.isFinite(n)) return String(v);
+    return n.toLocaleString();
+  }
+  if (col.kind === "bool") return v ? "✓" : "—";
+  if (col.kind === "enum") return col.enumLabels?.[String(v)] ?? String(v);
+  return String(v);
+}
+
+// Gather unique non-null values for a column — powers the enum filter popover.
+function uniqueValues<T>(rows: T[], key: string): string[] {
+  const set = new Set<string>();
+  for (const r of rows) {
+    const v = (r as Record<string, unknown>)[key];
+    if (v == null || v === "") continue;
+    set.add(String(v));
+  }
+  return [...set].sort();
+}
+
+export function SaasDataTable<T extends Record<string, unknown>>(props: {
+  columns: SaasDataTableColumn<T>[];
+  rows: T[];
+  rowKey?: (row: T, index: number) => string | number;
+  defaultSort?: SaasDataTableSort;
+  onRowClick?: (row: T) => void;
+  searchPlaceholder?: string;
+  // Aggregates shown in the sticky footer. Receives the *filtered+sorted*
+  // rows, returns a map of label → display value. Keep it small (3-6 keys).
+  aggregates?: (rows: T[]) => Record<string, React.ReactNode>;
+  rowHeight?: number;
+  // Table minimum height in pixels. Defaults to a flex fill; set this when
+  // the table is inside a container without explicit height.
+  height?: number | string;
+  // Optional stable column-width persistence key (localStorage).
+  widthStorageKey?: string;
+  // Rows per page. Pagination auto-kicks in when the filtered+sorted result
+  // set exceeds this. Default: 2000. Pass Infinity to disable paging and
+  // virtualize the whole set (not recommended above ~50K rows).
+  pageSize?: number;
+}) {
+  const P = usePalette();
+  const ROW_H = props.rowHeight ?? 34;
+
+  // Column widths — resizable via right-edge drag handle on headers.
+  const [widths, setWidths] = useState<Record<string, number>>(() => {
+    if (props.widthStorageKey && typeof window !== "undefined") {
+      try {
+        const saved = window.localStorage.getItem(props.widthStorageKey);
+        if (saved) return JSON.parse(saved);
+      } catch { /* ignore */ }
+    }
+    return Object.fromEntries(props.columns.map((c) => [c.key, c.width]));
+  });
+  useEffect(() => {
+    if (!props.widthStorageKey) return;
+    try { window.localStorage.setItem(props.widthStorageKey, JSON.stringify(widths)); } catch { /* ignore */ }
+  }, [widths, props.widthStorageKey]);
+  const getW = (k: string) => widths[k] ?? props.columns.find((c) => c.key === k)?.width ?? 100;
+  const totalW = props.columns.reduce((s, c) => s + getW(c.key), 0);
+
+  // Sort — cycles asc → desc → reset
+  const [sort, setSort] = useState<SaasDataTableSort>(
+    props.defaultSort ?? { key: props.columns[0]?.key ?? "", dir: "desc" },
+  );
+  const cycleSort = (key: string) => setSort((s) => {
+    if (s.key !== key) return { key, dir: "asc" };
+    if (s.dir === "asc") return { key, dir: "desc" };
+    return props.defaultSort ?? { key: props.columns[0]?.key ?? "", dir: "desc" };
+  });
+
+  // Per-column filters
+  const [colFilters, setColFilters] = useState<Record<string, ColFilter>>({});
+  const setColFilter = (key: string, val: ColFilter | null) =>
+    setColFilters((f) => {
+      const n = { ...f };
+      if (val == null) delete n[key]; else n[key] = val;
+      return n;
+    });
+
+  // Search (exact-match across all columns)
+  const [search, setSearch] = useState("");
+  const q = search.trim().toLowerCase();
+
+  // Apply column filters
+  const filtered = useMemo(() => {
+    const keys = Object.keys(colFilters);
+    if (keys.length === 0) return props.rows;
+    return props.rows.filter((r) => {
+      for (const k of keys) {
+        const f = colFilters[k];
+        const v = (r as Record<string, unknown>)[k];
+        if (f.kind === "range") {
+          const n = Number(v);
+          if (f.min != null && (!Number.isFinite(n) || n < f.min)) return false;
+          if (f.max != null && (!Number.isFinite(n) || n > f.max)) return false;
+        } else {
+          if (v == null) return false;
+          if (!f.values.includes(String(v))) return false;
+        }
+      }
+      return true;
+    });
+  }, [props.rows, colFilters]);
+
+  // Apply search
+  const searched = useMemo(() => {
+    if (!q) return filtered;
+    return filtered.filter((r) => {
+      for (const c of props.columns) {
+        const v = (r as Record<string, unknown>)[c.key];
+        if (v == null) continue;
+        const display = defaultFormat(c, v).toLowerCase();
+        if (display.includes(q)) return true;
+        if (String(v).toLowerCase().includes(q)) return true;
+      }
+      return false;
+    });
+  }, [filtered, q, props.columns]);
+
+  // Apply sort
+  const sorted = useMemo(() => {
+    const arr = searched.slice();
+    const { key, dir } = sort;
+    const m = dir === "asc" ? 1 : -1;
+    arr.sort((a, b) => {
+      const av = (a as Record<string, unknown>)[key];
+      const bv = (b as Record<string, unknown>)[key];
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * m;
+      const na = Number(av), nb = Number(bv);
+      if (Number.isFinite(na) && Number.isFinite(nb)) return (na - nb) * m;
+      return String(av).localeCompare(String(bv)) * m;
+    });
+    return arr;
+  }, [searched, sort]);
+
+  // Paging — auto-kicks in once the filtered+sorted result set exceeds pageSize
+  // so we don't end up scrolling through tens of thousands of virtualized rows.
+  // Aggregates are computed over the full filtered set (`sorted`), not the page.
+  const pageSize = props.pageSize ?? 2000;
+  const pagingActive = sorted.length > pageSize && Number.isFinite(pageSize);
+  const pageCount = pagingActive ? Math.max(1, Math.ceil(sorted.length / pageSize)) : 1;
+  const [page, setPage] = useState(0);
+  // Reset to first page whenever the underlying result set changes.
+  useEffect(() => { setPage(0); }, [colFilters, search, sort, pageSize]);
+  // Clamp if the result set shrinks below the current page.
+  useEffect(() => { if (page >= pageCount) setPage(0); }, [pageCount, page]);
+  const pageStart = pagingActive ? page * pageSize : 0;
+  const pageEnd = pagingActive ? Math.min(sorted.length, pageStart + pageSize) : sorted.length;
+  const paged = useMemo(
+    () => (pagingActive ? sorted.slice(pageStart, pageEnd) : sorted),
+    [sorted, pageStart, pageEnd, pagingActive],
+  );
+
+  // Virtualization — operates over the current page.
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(600);
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const onScroll = () => setScrollTop(el.scrollTop);
+    const ro = new ResizeObserver(() => setViewportH(el.clientHeight));
+    el.addEventListener("scroll", onScroll, { passive: true });
+    ro.observe(el);
+    setViewportH(el.clientHeight);
+    return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
+  }, []);
+
+  // Reset scroll on filter/search/sort/page change so users see the top of the current page.
+  useEffect(() => {
+    if (scrollerRef.current) scrollerRef.current.scrollTop = 0;
+    setScrollTop(0);
+  }, [colFilters, search, sort, page]);
+
+  const overscan = 10;
+  const totalH = paged.length * ROW_H;
+  const startIdx = Math.max(0, Math.floor(scrollTop / ROW_H) - overscan);
+  const endIdx = Math.min(paged.length, Math.ceil((scrollTop + viewportH) / ROW_H) + overscan);
+  const visible = paged.slice(startIdx, endIdx);
+
+  const aggregates = props.aggregates?.(sorted);
+
+  const containerStyle: React.CSSProperties = {
+    background: P.card,
+    border: `1px solid ${P.border}`,
+    borderRadius: 10,
+    overflow: "hidden",
+    display: "flex",
+    flexDirection: "column",
+    height: props.height ?? "100%",
+    minHeight: 300,
+  };
+
+  return (
+    <div style={containerStyle}>
+      {/* Toolbar: search + active-filter summary */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 12,
+        padding: "10px 14px", borderBottom: `1px solid ${P.border}`,
+      }}>
+        <div style={{ position: "relative", flex: 1, maxWidth: 360 }}>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={props.searchPlaceholder ?? "Search…"}
+            style={{
+              width: "100%", padding: "6px 10px 6px 26px", fontSize: 12,
+              background: P.elev, border: `1px solid ${P.border}`, color: P.text,
+              borderRadius: 5, outline: "none", fontFamily: P.sans,
+            }}
+          />
+          <span style={{ position: "absolute", left: 9, top: 6, fontSize: 11, color: P.faint, pointerEvents: "none" }}>⌕</span>
+          {search ? (
+            <button
+              onClick={() => setSearch("")}
+              style={{
+                position: "absolute", right: 4, top: 3, border: "none", background: "transparent",
+                color: P.faint, cursor: "pointer", fontSize: 13, padding: "2px 6px", lineHeight: 1,
+              }}
+            >×</button>
+          ) : null}
+        </div>
+        <div style={{ fontSize: 11, color: P.dim, fontFamily: P.mono }}>
+          {sorted.length.toLocaleString()} of {props.rows.length.toLocaleString()} rows
+          {Object.keys(colFilters).length > 0 ? (
+            <>
+              {" · "}
+              <button
+                onClick={() => setColFilters({})}
+                style={{
+                  fontSize: 11, color: P.accent, background: "none", border: "none",
+                  cursor: "pointer", padding: 0, fontFamily: P.mono,
+                }}
+              >clear column filters</button>
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Header row (sticky) */}
+      <div style={{
+        display: "flex", background: P.elev, borderBottom: `1px solid ${P.border}`,
+        position: "sticky", top: 0, zIndex: 2, flexShrink: 0,
+      }}>
+        {props.columns.map((c) => {
+          const w = getW(c.key);
+          const sorting = sort.key === c.key ? sort.dir : null;
+          const filterActive = colFilters[c.key] != null;
+          return (
+            <div key={c.key} style={{
+              width: w, minWidth: w, maxWidth: w,
+              padding: "8px 10px",
+              borderRight: `1px solid ${P.border}`,
+              position: "relative",
+              display: "flex", alignItems: "center",
+              justifyContent: c.align === "right" ? "flex-end" : c.align === "center" ? "center" : "flex-start",
+              gap: 4,
+              fontSize: 11, fontWeight: 500, color: P.dim,
+              userSelect: "none",
+            }}>
+              <span
+                onClick={() => cycleSort(c.key)}
+                style={{
+                  cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4,
+                  color: sorting ? P.accent : P.dim,
+                }}
+                title="Click to sort"
+              >
+                {c.label}
+                <SaasSortIcon dir={sorting} P={P} />
+              </span>
+              <SaasColFilterButton
+                column={c}
+                rows={props.rows}
+                value={colFilters[c.key] ?? null}
+                onChange={(next) => setColFilter(c.key, next)}
+                P={P}
+              />
+              {/* Resize handle — drag to resize, double-click to reset to default */}
+              <div
+                onMouseDown={(e) => {
+                  const startX = e.clientX;
+                  const startW = getW(c.key);
+                  const onMove = (ev: MouseEvent) => {
+                    const next = Math.max(40, startW + (ev.clientX - startX));
+                    setWidths((prev) => ({ ...prev, [c.key]: next }));
+                  };
+                  const onUp = () => {
+                    window.removeEventListener("mousemove", onMove);
+                    window.removeEventListener("mouseup", onUp);
+                    document.body.style.cursor = "";
+                  };
+                  window.addEventListener("mousemove", onMove);
+                  window.addEventListener("mouseup", onUp);
+                  document.body.style.cursor = "col-resize";
+                  e.preventDefault();
+                }}
+                onDoubleClick={() => setWidths((prev) => ({ ...prev, [c.key]: c.width }))}
+                title="Drag to resize · double-click to reset"
+                style={{
+                  position: "absolute", right: -3, top: 0, bottom: 0, width: 7,
+                  cursor: "col-resize", zIndex: 3,
+                }}
+              />
+              {filterActive ? (
+                <span
+                  style={{
+                    position: "absolute", top: 2, right: 2,
+                    width: 5, height: 5, borderRadius: "50%", background: P.accent,
+                  }}
+                />
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Virtualized body */}
+      <div
+        ref={scrollerRef}
+        style={{ flex: 1, overflow: "auto", position: "relative", minHeight: 200 }}
+      >
+        {sorted.length === 0 ? (
+          <div style={{
+            padding: "40px 14px", textAlign: "center", color: P.dim,
+            fontSize: 12, fontFamily: P.sans,
+          }}>
+            No rows match the current filters.
+          </div>
+        ) : (
+          <div style={{ height: totalH, position: "relative", minWidth: totalW }}>
+            {visible.map((row, i) => {
+              const idx = startIdx + i;
+              const key = props.rowKey ? props.rowKey(row, idx) : idx;
+              return (
+                <div
+                  key={key}
+                  onClick={() => props.onRowClick?.(row)}
+                  style={{
+                    position: "absolute", top: idx * ROW_H, left: 0,
+                    display: "flex", alignItems: "center",
+                    height: ROW_H, width: "100%", minWidth: totalW,
+                    borderBottom: `1px solid ${P.border}`,
+                    cursor: props.onRowClick ? "pointer" : "default",
+                    background: idx % 2 === 0 ? "transparent" : P.bg,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = P.elev)}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "transparent" : P.bg)}
+                >
+                  {props.columns.map((c) => {
+                    const w = getW(c.key);
+                    const v = (row as Record<string, unknown>)[c.key];
+                    const content = c.render ? c.render(v, row) : defaultFormat(c, v);
+                    return (
+                      <div key={c.key} style={{
+                        width: w, minWidth: w, maxWidth: w,
+                        padding: "0 10px",
+                        textAlign: c.align ?? "left",
+                        fontFamily: c.mono ? P.mono : P.sans,
+                        fontSize: 12,
+                        color: P.text,
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }}>
+                        {content}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Pagination bar — only when the filtered set exceeds pageSize */}
+      {pagingActive ? (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "6px 14px", borderTop: `1px solid ${P.border}`,
+          background: P.elev, fontSize: 11, color: P.sub,
+          flexShrink: 0,
+        }}>
+          <span style={{ fontFamily: P.mono, color: P.dim }}>
+            Rows {(pageStart + 1).toLocaleString()}–{pageEnd.toLocaleString()} of {sorted.length.toLocaleString()}
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <SaasPageBtn onClick={() => setPage(0)}                                 disabled={page === 0}              P={P}>« First</SaasPageBtn>
+            <SaasPageBtn onClick={() => setPage((p) => Math.max(0, p - 1))}         disabled={page === 0}              P={P}>‹ Prev</SaasPageBtn>
+            <span style={{ fontFamily: P.mono, fontSize: 11, color: P.text, padding: "0 8px" }}>
+              Page {page + 1} of {pageCount}
+            </span>
+            <SaasPageBtn onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={page >= pageCount - 1} P={P}>Next ›</SaasPageBtn>
+            <SaasPageBtn onClick={() => setPage(pageCount - 1)}                      disabled={page >= pageCount - 1} P={P}>Last »</SaasPageBtn>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Aggregates footer (sticky at bottom) */}
+      {aggregates && Object.keys(aggregates).length > 0 ? (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 24,
+          padding: "8px 14px", borderTop: `1px solid ${P.border}`,
+          background: P.elev, fontSize: 11, color: P.sub,
+          flexShrink: 0, overflowX: "auto",
+        }}>
+          {Object.entries(aggregates).map(([k, v]) => (
+            <div key={k} style={{ display: "flex", alignItems: "baseline", gap: 6, whiteSpace: "nowrap" }}>
+              <span style={{ color: P.dim, fontFamily: P.mono, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>{k}</span>
+              <span style={{ color: P.text, fontFamily: P.mono, fontSize: 12, fontWeight: 500 }}>{v}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SaasPageBtn(props: { children: React.ReactNode; onClick: () => void; disabled: boolean; P: SaasPalette }) {
+  const { P } = props;
+  return (
+    <button
+      onClick={props.onClick}
+      disabled={props.disabled}
+      style={{
+        padding: "3px 8px", fontSize: 11, fontFamily: P.mono,
+        background: "transparent", border: `1px solid ${P.border}`,
+        color: props.disabled ? P.faint : P.sub,
+        borderRadius: 4,
+        cursor: props.disabled ? "not-allowed" : "pointer",
+      }}
+      onMouseEnter={(e) => { if (!props.disabled) { e.currentTarget.style.color = P.text; e.currentTarget.style.borderColor = P.rule; } }}
+      onMouseLeave={(e) => { e.currentTarget.style.color = props.disabled ? P.faint : P.sub; e.currentTarget.style.borderColor = P.border; }}
+    >
+      {props.children}
+    </button>
+  );
+}
+
+function SaasSortIcon({ dir, P }: { dir: "asc" | "desc" | null; P: SaasPalette }) {
+  return (
+    <svg width={9} height={11} viewBox="0 0 10 14" style={{ flexShrink: 0 }}>
+      <polygon points="5,1 9,5 1,5" fill={dir === "asc" ? P.accent : P.faint} opacity={dir === "asc" ? 1 : 0.5} />
+      <polygon points="5,13 1,9 9,9" fill={dir === "desc" ? P.accent : P.faint} opacity={dir === "desc" ? 1 : 0.5} />
+    </svg>
+  );
+}
+
+function SaasColFilterButton<T extends Record<string, unknown>>({
+  column, rows, value, onChange, P,
+}: {
+  column: SaasDataTableColumn<T>;
+  rows: T[];
+  value: ColFilter | null;
+  onChange: (next: ColFilter | null) => void;
+  P: SaasPalette;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const popRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (popRef.current && !popRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const isNumeric = column.kind === "money" || column.kind === "number" || column.kind === "rate";
+  const active = value != null;
+
+  const triggerStyle: React.CSSProperties = {
+    padding: "2px 4px", border: "none",
+    background: active ? P.accentSoft : "transparent",
+    borderRadius: 3, cursor: "pointer",
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    marginLeft: 4,
+  };
+  const popStyle: React.CSSProperties = {
+    position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 100,
+    background: P.card, border: `1px solid ${P.border}`, borderRadius: 6,
+    padding: 8, minWidth: 220, boxShadow: "0 12px 28px rgba(0,0,0,0.45)",
+  };
+  const linkStyle: React.CSSProperties = {
+    fontSize: 11, color: P.dim, background: "none", border: "none",
+    cursor: "pointer", fontFamily: P.sans, padding: 0,
+  };
+
+  if (isNumeric) {
+    const v = value?.kind === "range" ? value : { kind: "range" as const };
+    return (
+      <div ref={popRef} style={{ position: "relative" }}>
+        <button onClick={() => setOpen((o) => !o)} style={triggerStyle} title="Filter">
+          <SaasFilterIcon active={active} P={P} />
+        </button>
+        {open ? (
+          <div style={popStyle}>
+            <div style={{ fontSize: 11, color: P.dim, marginBottom: 6, fontFamily: P.sans }}>{column.label} range</div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="number"
+                placeholder="min"
+                value={v.min ?? ""}
+                onChange={(e) => onChange({ kind: "range", min: e.target.value === "" ? undefined : Number(e.target.value), max: v.max })}
+                style={numInp(P)}
+              />
+              <span style={{ color: P.dim, fontSize: 11 }}>—</span>
+              <input
+                type="number"
+                placeholder="max"
+                value={v.max ?? ""}
+                onChange={(e) => onChange({ kind: "range", min: v.min, max: e.target.value === "" ? undefined : Number(e.target.value) })}
+                style={numInp(P)}
+              />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
+              <button onClick={() => { onChange(null); setOpen(false); }} style={linkStyle}>Clear</button>
+              <button
+                onClick={() => setOpen(false)}
+                style={{
+                  fontSize: 11, padding: "4px 10px", background: P.accent, color: "#fff",
+                  border: "none", borderRadius: 4, cursor: "pointer", fontFamily: P.sans, fontWeight: 500,
+                }}
+              >Done</button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  // Enum / string multi-select
+  const opts = useMemo(() => uniqueValues(rows, column.key), [rows, column.key]);
+  const qLower = q.toLowerCase();
+  const filteredOpts = qLower ? opts.filter((o) => o.toLowerCase().includes(qLower)) : opts;
+  const selected = new Set(value?.kind === "enum" ? value.values : []);
+  const toggle = (v: string) => {
+    const next = new Set(selected);
+    if (next.has(v)) next.delete(v); else next.add(v);
+    onChange(next.size === 0 ? null : { kind: "enum", values: [...next] });
+  };
+
+  return (
+    <div ref={popRef} style={{ position: "relative" }}>
+      <button onClick={() => setOpen((o) => !o)} style={triggerStyle} title="Filter">
+        <SaasFilterIcon active={active} P={P} />
+      </button>
+      {open ? (
+        <div style={popStyle}>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder={`Filter ${column.label.toLowerCase()}…`}
+            style={{
+              width: "100%", padding: "4px 8px", marginBottom: 6,
+              background: P.elev, border: `1px solid ${P.border}`, borderRadius: 4,
+              color: P.text, fontSize: 12, outline: "none", fontFamily: P.sans,
+            }}
+          />
+          <div style={{ maxHeight: 220, overflowY: "auto", margin: "0 -2px" }}>
+            {filteredOpts.map((opt) => {
+              const checked = selected.has(opt);
+              const display = column.enumLabels?.[opt] ?? opt;
+              return (
+                <label key={opt} style={{
+                  display: "flex", alignItems: "center", gap: 7,
+                  padding: "4px 6px", borderRadius: 4, cursor: "pointer", fontSize: 12,
+                  color: checked ? P.text : P.sub,
+                  background: checked ? P.accentSoft : "transparent",
+                }}>
+                  <span style={{
+                    width: 12, height: 12, borderRadius: 3,
+                    border: `1px solid ${checked ? P.accent : P.border}`,
+                    background: checked ? P.accent : "transparent",
+                    display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                  }}>
+                    {checked ? <span style={{ color: "#fff", fontSize: 9, fontWeight: 700, lineHeight: 1 }}>✓</span> : null}
+                  </span>
+                  <input type="checkbox" checked={checked} onChange={() => toggle(opt)} style={{ display: "none" }} />
+                  <span style={{ flex: 1 }}>{display}</span>
+                </label>
+              );
+            })}
+            {filteredOpts.length === 0 ? (
+              <div style={{ fontSize: 11, color: P.faint, padding: "6px 4px", fontStyle: "italic" }}>No matches</div>
+            ) : null}
+          </div>
+          <div style={{
+            display: "flex", justifyContent: "space-between",
+            marginTop: 6, paddingTop: 6, borderTop: `1px solid ${P.border}`,
+          }}>
+            <button onClick={() => { onChange(null); setOpen(false); }} style={linkStyle}>Clear</button>
+            <span style={{ fontSize: 10, color: P.dim, fontFamily: P.mono }}>{selected.size} selected</span>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SaasFilterIcon({ active, P }: { active: boolean; P: SaasPalette }) {
+  return (
+    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke={active ? P.accent : P.faint} strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+    </svg>
+  );
+}
+
+function numInp(P: SaasPalette): React.CSSProperties {
+  return {
+    padding: "4px 8px", background: P.elev, border: `1px solid ${P.border}`,
+    borderRadius: 4, color: P.text, fontSize: 12, outline: "none",
+    fontFamily: P.mono, width: 80,
+  };
+}
+
 declare global {
   interface Window {
     Definite?: DefiniteBridge;
