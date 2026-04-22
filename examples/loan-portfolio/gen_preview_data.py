@@ -53,30 +53,146 @@ EMPLOYMENTS = [
 ]
 TERMS = [24, 36, 48, 60]
 PURPOSES = [
-    "Debt consolidation", "Home repair", "Medical", "Wedding",
-    "Auto repair", "Moving", "Education", "Vacation", "Business", "Other",
+    "Debt consolidation",
+    "Home repair",
+    "Medical",
+    "Wedding",
+    "Auto repair",
+    "Moving",
+    "Education",
+    "Vacation",
+    "Business",
+    "Other",
 ]
 FIRST_NAMES = list("MRJASDET KLPBCHNOVWYZFGI".replace(" ", ""))
 LAST_NAMES = [
-    "Chen", "Patel", "Williams", "Kowalski", "Nakamura", "Okafor", "Martinez",
-    "Becker", "Thompson", "Garcia", "Rodriguez", "Hernandez", "Singh", "Ahmed",
-    "Cohen", "O'Brien", "Walsh", "Andersen", "Muller", "Lopez", "Tran", "Nguyen",
-    "Park", "Kim", "Wong", "Liu", "Murphy", "Foster", "Reyes", "Diaz", "Webb",
-    "Holt", "Sloan", "Mendez", "Zhao", "Iyer", "Khan", "Bauer", "Roux",
-    "Esposito", "Romano", "Bianchi", "Fischer", "Schmidt", "Larsen", "Berg",
-    "Costa", "Silva", "Petrov", "Volkov", "Novak", "Jansen", "Yamamoto",
-    "Suzuki", "Tanaka", "Mensah", "Adeyemi", "Eze", "Ndiaye", "Cisse", "Saito",
-    "Kovac", "Vasquez", "Romero", "Castillo", "Cruz", "Ortiz", "Ramos",
-    "Brennan", "Donnelly", "Quinn", "Sweeney", "McKay", "Lindgren", "Hansen",
+    "Chen",
+    "Patel",
+    "Williams",
+    "Kowalski",
+    "Nakamura",
+    "Okafor",
+    "Martinez",
+    "Becker",
+    "Thompson",
+    "Garcia",
+    "Rodriguez",
+    "Hernandez",
+    "Singh",
+    "Ahmed",
+    "Cohen",
+    "O'Brien",
+    "Walsh",
+    "Andersen",
+    "Muller",
+    "Lopez",
+    "Tran",
+    "Nguyen",
+    "Park",
+    "Kim",
+    "Wong",
+    "Liu",
+    "Murphy",
+    "Foster",
+    "Reyes",
+    "Diaz",
+    "Webb",
+    "Holt",
+    "Sloan",
+    "Mendez",
+    "Zhao",
+    "Iyer",
+    "Khan",
+    "Bauer",
+    "Roux",
+    "Esposito",
+    "Romano",
+    "Bianchi",
+    "Fischer",
+    "Schmidt",
+    "Larsen",
+    "Berg",
+    "Costa",
+    "Silva",
+    "Petrov",
+    "Volkov",
+    "Novak",
+    "Jansen",
+    "Yamamoto",
+    "Suzuki",
+    "Tanaka",
+    "Mensah",
+    "Adeyemi",
+    "Eze",
+    "Ndiaye",
+    "Cisse",
+    "Saito",
+    "Kovac",
+    "Vasquez",
+    "Romero",
+    "Castillo",
+    "Cruz",
+    "Ortiz",
+    "Ramos",
+    "Brennan",
+    "Donnelly",
+    "Quinn",
+    "Sweeney",
+    "McKay",
+    "Lindgren",
+    "Hansen",
 ]
 STATE_WEIGHTS = {
-    "CA": 412, "TX": 389, "NY": 276, "FL": 268, "IL": 214, "PA": 158, "OH": 142,
-    "GA": 131, "AZ": 118, "WA": 104, "NC": 96, "CO": 84, "OR": 71, "MA": 68,
-    "VA": 62, "MI": 58, "NJ": 54, "MN": 48, "MD": 42, "IN": 38, "WI": 34,
-    "TN": 32, "MO": 28, "SC": 25, "LA": 22, "NV": 21, "KY": 18, "OK": 16,
-    "AL": 15, "UT": 14, "CT": 13, "KS": 12, "AR": 11, "IA": 10, "MS": 9,
-    "NE": 8, "NM": 7, "WV": 6, "ID": 6, "HI": 5, "ME": 4, "RI": 4, "NH": 4,
-    "MT": 3, "DE": 3, "SD": 3, "ND": 2, "VT": 2, "AK": 2, "WY": 1,
+    "CA": 412,
+    "TX": 389,
+    "NY": 276,
+    "FL": 268,
+    "IL": 214,
+    "PA": 158,
+    "OH": 142,
+    "GA": 131,
+    "AZ": 118,
+    "WA": 104,
+    "NC": 96,
+    "CO": 84,
+    "OR": 71,
+    "MA": 68,
+    "VA": 62,
+    "MI": 58,
+    "NJ": 54,
+    "MN": 48,
+    "MD": 42,
+    "IN": 38,
+    "WI": 34,
+    "TN": 32,
+    "MO": 28,
+    "SC": 25,
+    "LA": 22,
+    "NV": 21,
+    "KY": 18,
+    "OK": 16,
+    "AL": 15,
+    "UT": 14,
+    "CT": 13,
+    "KS": 12,
+    "AR": 11,
+    "IA": 10,
+    "MS": 9,
+    "NE": 8,
+    "NM": 7,
+    "WV": 6,
+    "ID": 6,
+    "HI": 5,
+    "ME": 4,
+    "RI": 4,
+    "NH": 4,
+    "MT": 3,
+    "DE": 3,
+    "SD": 3,
+    "ND": 2,
+    "VT": 2,
+    "AK": 2,
+    "WY": 1,
 }
 
 
@@ -197,103 +313,111 @@ def gen_rows():
         autopay = rng.random() < 0.78
 
         if status == "current":
-            last_pay = f"{END_Y:04d}-{END_M:02d}-{1 + int(rng.random()*28):02d}"
+            last_pay = f"{END_Y:04d}-{END_M:02d}-{1 + int(rng.random() * 28):02d}"
         elif status == "late_30":
-            last_pay = f"{END_Y:04d}-11-{1 + int(rng.random()*28):02d}"
+            last_pay = f"{END_Y:04d}-11-{1 + int(rng.random() * 28):02d}"
         elif status == "late_60":
-            last_pay = f"{END_Y:04d}-10-{1 + int(rng.random()*28):02d}"
+            last_pay = f"{END_Y:04d}-10-{1 + int(rng.random() * 28):02d}"
         elif status == "late_90":
-            last_pay = f"{END_Y:04d}-09-{1 + int(rng.random()*28):02d}"
+            last_pay = f"{END_Y:04d}-09-{1 + int(rng.random() * 28):02d}"
         elif status == "paid_off":
             last_pay = f"{END_Y:04d}-{END_M:02d}-15"
         else:
-            last_pay = f"{END_Y:04d}-08-{1 + int(rng.random()*28):02d}"
+            last_pay = f"{END_Y:04d}-08-{1 + int(rng.random() * 28):02d}"
 
         fn = FIRST_NAMES[int(rng.random() * len(FIRST_NAMES))]
         ln = LAST_NAMES[int(rng.random() * len(LAST_NAMES))]
         vintage = f"{year}-Q{(month - 1) // 3 + 1}"
 
-        out.append({
-            "loanId": f"LN-{25883 - i}",
-            "borrower": f"{fn}. {ln}",
-            "amount": int(amount),
-            "balance": int(round(balance)),
-            "fico": int(fico),
-            "ficoBand": band,
-            "rate": round(rate, 2),
-            "term": int(term),
-            "income": int(income),
-            "incomeBand": income_band(income),
-            "dti": round(dti, 3),
-            "dtiBand": dti_band(dti),
-            "status": status,
-            "state": state,
-            "product": product,
-            "channel": channel,
-            "employment": employment,
-            "purpose": purpose,
-            "autopay": bool(autopay),
-            "payMethod": "ach_auto" if autopay else ("ach_manual" if rng.random() < 0.6 else ("card" if rng.random() < 0.7 else "check")),
-            "originated": originated,
-            "originatedMonth": f"{year:04d}-{month:02d}",
-            "vintage": vintage,
-            "mob": int(mob),
-            "lastPay": last_pay,
-            "collectionsFlag": "none" if status in ("current", "paid_off") else ("soft" if status == "late_30" else ("active" if status == "late_60" else "legal")),
-        })
+        out.append(
+            {
+                "loanId": f"LN-{25883 - i}",
+                "borrower": f"{fn}. {ln}",
+                "amount": int(amount),
+                "balance": int(round(balance)),
+                "fico": int(fico),
+                "ficoBand": band,
+                "rate": round(rate, 2),
+                "term": int(term),
+                "income": int(income),
+                "incomeBand": income_band(income),
+                "dti": round(dti, 3),
+                "dtiBand": dti_band(dti),
+                "status": status,
+                "state": state,
+                "product": product,
+                "channel": channel,
+                "employment": employment,
+                "purpose": purpose,
+                "autopay": bool(autopay),
+                "payMethod": "ach_auto"
+                if autopay
+                else ("ach_manual" if rng.random() < 0.6 else ("card" if rng.random() < 0.7 else "check")),
+                "originated": originated,
+                "originatedMonth": f"{year:04d}-{month:02d}",
+                "vintage": vintage,
+                "mob": int(mob),
+                "lastPay": last_pay,
+                "collectionsFlag": "none"
+                if status in ("current", "paid_off")
+                else ("soft" if status == "late_30" else ("active" if status == "late_60" else "legal")),
+            }
+        )
     out.sort(key=lambda r: r["originated"], reverse=True)
     return out
 
 
 def write_parquet(rows):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    schema = pa.schema([
-        ("loanId", pa.string()),
-        ("borrower", pa.string()),
-        ("amount", pa.int64()),
-        ("balance", pa.int64()),
-        ("fico", pa.int32()),
-        ("ficoBand", pa.string()),
-        ("rate", pa.float64()),
-        ("term", pa.int32()),
-        ("income", pa.int64()),
-        ("incomeBand", pa.string()),
-        ("dti", pa.float64()),
-        ("dtiBand", pa.string()),
-        ("status", pa.string()),
-        ("state", pa.string()),
-        ("product", pa.string()),
-        ("channel", pa.string()),
-        ("employment", pa.string()),
-        ("purpose", pa.string()),
-        ("autopay", pa.bool_()),
-        ("payMethod", pa.string()),
-        ("originated", pa.string()),
-        ("originatedMonth", pa.string()),
-        ("vintage", pa.string()),
-        ("mob", pa.int32()),
-        ("lastPay", pa.string()),
-        ("collectionsFlag", pa.string()),
-    ])
+    schema = pa.schema(
+        [
+            ("loanId", pa.string()),
+            ("borrower", pa.string()),
+            ("amount", pa.int64()),
+            ("balance", pa.int64()),
+            ("fico", pa.int32()),
+            ("ficoBand", pa.string()),
+            ("rate", pa.float64()),
+            ("term", pa.int32()),
+            ("income", pa.int64()),
+            ("incomeBand", pa.string()),
+            ("dti", pa.float64()),
+            ("dtiBand", pa.string()),
+            ("status", pa.string()),
+            ("state", pa.string()),
+            ("product", pa.string()),
+            ("channel", pa.string()),
+            ("employment", pa.string()),
+            ("purpose", pa.string()),
+            ("autopay", pa.bool_()),
+            ("payMethod", pa.string()),
+            ("originated", pa.string()),
+            ("originatedMonth", pa.string()),
+            ("vintage", pa.string()),
+            ("mob", pa.int32()),
+            ("lastPay", pa.string()),
+            ("collectionsFlag", pa.string()),
+        ]
+    )
     table = pa.Table.from_pylist(rows, schema=schema)
     pq.write_table(table, PARQUET_PATH, compression="zstd")
 
 
 FICO_BANDS = [
-    {"band": "A", "range": "750+",    "apr": 5.8,  "defaultRate": 0.6,  "color": "#10B981"},
-    {"band": "B", "range": "700-749", "apr": 7.2,  "defaultRate": 1.4,  "color": "#84CC16"},
-    {"band": "C", "range": "650-699", "apr": 9.5,  "defaultRate": 3.1,  "color": "#F59E0B"},
-    {"band": "D", "range": "600-649", "apr": 12.8, "defaultRate": 6.2,  "color": "#F97316"},
-    {"band": "E", "range": "<600",    "apr": 17.4, "defaultRate": 11.8, "color": "#EF4444"},
+    {"band": "A", "range": "750+", "apr": 5.8, "defaultRate": 0.6, "color": "#10B981"},
+    {"band": "B", "range": "700-749", "apr": 7.2, "defaultRate": 1.4, "color": "#84CC16"},
+    {"band": "C", "range": "650-699", "apr": 9.5, "defaultRate": 3.1, "color": "#F59E0B"},
+    {"band": "D", "range": "600-649", "apr": 12.8, "defaultRate": 6.2, "color": "#F97316"},
+    {"band": "E", "range": "<600", "apr": 17.4, "defaultRate": 11.8, "color": "#EF4444"},
 ]
 
 STATUS_CATALOG = [
-    {"key": "current",     "label": "Current",      "tone": "ok"},
-    {"key": "late_30",     "label": "30 days late", "tone": "warn"},
-    {"key": "late_60",     "label": "60 days late", "tone": "warn"},
-    {"key": "late_90",     "label": "90+ late",     "tone": "bad"},
-    {"key": "paid_off",    "label": "Paid off",     "tone": "muted"},
-    {"key": "charged_off", "label": "Charged off",  "tone": "bad"},
+    {"key": "current", "label": "Current", "tone": "ok"},
+    {"key": "late_30", "label": "30 days late", "tone": "warn"},
+    {"key": "late_60", "label": "60 days late", "tone": "warn"},
+    {"key": "late_90", "label": "90+ late", "tone": "bad"},
+    {"key": "paid_off", "label": "Paid off", "tone": "muted"},
+    {"key": "charged_off", "label": "Charged off", "tone": "bad"},
 ]
 
 
