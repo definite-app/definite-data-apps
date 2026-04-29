@@ -3,6 +3,9 @@ import React, { useMemo, useState } from "react";
 import {
   buildPalette,
   CachePopover,
+  DateRangeFilter,
+  DEFAULT_DATE_RANGE_PRESETS,
+  type DateRangeValue,
   DrillProvider,
   ErrorState,
   LoadingState,
@@ -17,6 +20,27 @@ import {
   useSqlQuery,
   useTheme,
 } from "@definite/runtime";
+
+// Default to the "Last 12 months" preset. The filter is applied against the
+// `createdDate` column declared in app.json — change DATE_COLUMN if you
+// rename it.
+const DATE_COLUMN = "createdDate";
+
+function initialDateRange(): DateRangeValue {
+  const preset =
+    DEFAULT_DATE_RANGE_PRESETS.find((p) => p.key === "last12m") ??
+    DEFAULT_DATE_RANGE_PRESETS[0];
+  return preset.compute();
+}
+
+const escSql = (v: string) => v.replace(/'/g, "''");
+
+function buildWhere(from: string, to: string): string {
+  const clauses: string[] = [];
+  if (from) clauses.push(`${DATE_COLUMN} >= '${escSql(from)}'`);
+  if (to) clauses.push(`${DATE_COLUMN} <= '${escSql(to)}'`);
+  return clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : "";
+}
 
 // ── Sidebar navigation ────────────────────────────────────────────────────
 // Each entry maps to a view rendered in the main pane. Icons are single
@@ -63,12 +87,20 @@ function InnerApp({ theme, onThemeChange, dataset }: {
 }) {
   const P = usePalette();
   const [view, setView] = useState("overview");
+  const [dateRange, setDateRange] = useState<DateRangeValue>(initialDateRange);
+
+  const where = useMemo(
+    () => buildWhere(dateRange.from, dateRange.to),
+    [dateRange.from, dateRange.to],
+  );
 
   // Example query — replace with your own.
   const summary = useSqlQuery<Array<{ rowCount: number }>>(
     dataset,
-    dataset.tableRef ? `SELECT COUNT(*)::INTEGER AS rowCount FROM ${dataset.tableRef}` : "",
-    [],
+    dataset.tableRef
+      ? `SELECT COUNT(*)::INTEGER AS rowCount FROM ${dataset.tableRef}${where}`
+      : "",
+    [where],
   );
 
   const rowCount = summary.data?.[0]?.rowCount ?? 0;
@@ -80,6 +112,15 @@ function InnerApp({ theme, onThemeChange, dataset }: {
       navItems={NAV_ITEMS}
       activeView={view}
       onViewChange={setView}
+      dateRangeSlot={
+        <DateRangeFilter
+          value={dateRange}
+          onChange={setDateRange}
+          label={null}
+          popoverPlacement="right-start"
+          triggerStyle={{ width: "100%", minWidth: 0, justifyContent: "space-between", padding: "7px 10px", fontSize: 12 }}
+        />
+      }
       theme={theme}
       onThemeChange={onThemeChange}
       footer={<>Live DuckDB · {rowCount.toLocaleString()} rows</>}
