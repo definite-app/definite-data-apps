@@ -1222,6 +1222,16 @@ export function useDataset(key: string, opts?: { mode?: DataAppMode }): DatasetH
   useEffect(() => {
     let cancelled = false;
 
+    // Skip placeholder resources entirely — the agent is still scaffolding,
+    // and running the placeholder SQL against the warehouse would throw a
+    // Catalog Error which surfaces as host-side "Data app error" toasts.
+    // Stay in loading state; LoadingState detects the placeholder and
+    // renders ScaffoldingState in the iframe.
+    if (resourceUsesPlaceholderSql(getManifestResourceDefinition(key))) {
+      setState((current) => ({ ...current, key, loading: true, error: null, cache: null }));
+      return () => {};
+    }
+
     const load = async (bypassCache = false) => {
       setState((current) => ({ ...current, key, loading: true, error: null }));
       try {
@@ -1280,6 +1290,14 @@ export function useJsonResource<T = unknown>(key: string, opts?: { mode?: DataAp
 
   useEffect(() => {
     let cancelled = false;
+
+    // Skip placeholder resources entirely — see useDataset for the same
+    // short-circuit. Prevents Catalog Errors from leaking out to host toasts
+    // while the agent is scaffolding.
+    if (resourceUsesPlaceholderSql(getManifestResourceDefinition(key))) {
+      setState((current) => ({ ...current, loading: true, error: null, cache: null }));
+      return () => {};
+    }
 
     const load = async (bypassCache = false) => {
       setState((current) => ({ ...current, loading: true, error: null }));
