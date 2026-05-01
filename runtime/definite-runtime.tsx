@@ -412,6 +412,39 @@ function getManifestResourceDefinition(key: string): unknown {
   return resource ?? null;
 }
 
+// Sentinel substrings that ship in template default app.json files. While the agent
+// is wiring up a freshly scaffolded app, the published HTML still embeds these
+// placeholder queries — running them against the warehouse returns a Catalog Error.
+// Detecting the marker lets the runtime swap the red error UI for a friendly
+// "still being built" state until the agent rebuilds with real SQL.
+const PLACEHOLDER_SQL_MARKERS = [
+  "LAKE.SCHEMA.my_table",
+];
+
+function resourceUsesPlaceholderSql(resource: unknown): boolean {
+  if (!resource || typeof resource !== "object" || Array.isArray(resource)) {
+    return false;
+  }
+  const source = (resource as Record<string, unknown>).source;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return false;
+  }
+  const sql = (source as Record<string, unknown>).sql;
+  if (typeof sql !== "string") {
+    return false;
+  }
+  return PLACEHOLDER_SQL_MARKERS.some((marker) => sql.includes(marker));
+}
+
+export function hasPlaceholderResource(): boolean {
+  const manifest = getEmbeddedManifest();
+  const resources = manifest?.resources;
+  if (!resources || typeof resources !== "object" || Array.isArray(resources)) {
+    return false;
+  }
+  return Object.values(resources as Record<string, unknown>).some(resourceUsesPlaceholderSql);
+}
+
 async function buildResourceCacheKey(kind: "dataset" | "json", key: string, mode: DataAppMode): Promise<string> {
   const context = await getBridge().getContext();
   const fingerprint = JSON.stringify({
@@ -1977,7 +2010,41 @@ export function TextInput(props: {
   );
 }
 
+export function ScaffoldingState(props: { message?: string } = {}) {
+  return (
+    <div
+      className="flex min-h-screen flex-col items-center justify-center px-6"
+      style={{ animation: "fade-up 0.3s ease-out" }}
+    >
+      <div className="flex max-w-md flex-col items-center gap-4 text-center">
+        <div className="flex items-center gap-1.5">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="h-2 w-2 rounded-full"
+              style={{
+                background: "var(--accent)",
+                animation: "pulse-dot 1.2s ease-in-out infinite",
+                animationDelay: `${i * 0.2}s`,
+              }}
+            />
+          ))}
+        </div>
+        <div className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>
+          Setting up your data app
+        </div>
+        <div className="text-sm leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+          {props.message ?? "Wiring up your data and views. This page will refresh when the next build lands."}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function LoadingState(props: { message?: string }) {
+  if (hasPlaceholderResource()) {
+    return <ScaffoldingState />;
+  }
   return (
     <div
       className="flex min-h-screen flex-col items-center justify-center px-6"
@@ -2006,6 +2073,9 @@ export function LoadingState(props: { message?: string }) {
 }
 
 export function ErrorState(props: { title: string; message: string }) {
+  if (hasPlaceholderResource()) {
+    return <ScaffoldingState />;
+  }
   return (
     <div
       className="flex min-h-screen items-center justify-center px-6"
