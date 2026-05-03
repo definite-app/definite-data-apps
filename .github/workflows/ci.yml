@@ -42,3 +42,28 @@ jobs:
 
       - name: Preview build works
         run: node preview.mjs revenue-explorer
+
+      - name: Build refined template
+        run: node build.mjs templates/refined
+
+      - name: Refined template produced index.html
+        run: |
+          test -f templates/refined/dist/index.html
+          grep -q '<div id="root"></div>' templates/refined/dist/index.html
+
+      - name: Build _refined_demo with preview parquet
+        run: node preview.mjs _refined_demo
+
+      - name: _refined_demo produced index.html
+        run: |
+          test -f examples/_refined_demo/dist/index.html
+          grep -q 'My App' examples/_refined_demo/dist/index.html
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Headless smoke - refined template starts up
+        run: node scripts/headless-smoke.mjs templates/refined/dist/index.html
+
+      - name: Headless smoke - _refined_demo starts up with parquet data
+        run: node scripts/headless-smoke.mjs examples/_refined_demo/dist/index.html --require-text "Overview"

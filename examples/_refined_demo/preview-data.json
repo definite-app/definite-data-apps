@@ -1,0 +1,13 @@
+{
+  "context": {
+    "publicMode": false,
+    "driveFile": "preview://data-apps/_refined_demo",
+    "appVersion": "v2"
+  },
+  "datasets": {
+    "main": {
+      "file": "data/sample.parquet",
+      "format": "parquet"
+    }
+  }
+}

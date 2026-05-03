@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "name": "My App",
+  "entry": "src/main.tsx",
+  "resources": {
+    "main": {
+      "kind": "dataset",
+      "source": {
+        "type": "sql",
+        "sql": "SELECT id, originated, name FROM LAKE.SCHEMA.sample_events LIMIT 10000"
+      },
+      "public": false
+    }
+  }
+}
