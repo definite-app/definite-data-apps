@@ -4469,6 +4469,302 @@ export type DrillAiChatConfig = {
   disclaimer?: string;
 };
 
+// ── Fi Inspect ────────────────────────────────────────────────────────────
+// Lets a parent host (wax) toggle "inspect mode," in which the user picks a
+// component inside the data app to scope a follow-on Fi question or edit.
+//
+// Components wrap themselves in <FiInspectable fiId="..." datum={row}> to
+// register with a runtime registry. Parent enters inspect mode by sending
+// the bridge's `definite:inspect-mode-enter` message; the overlay highlights
+// registered nodes on hover and posts the picked target back as
+// `definite:inspect-target`. Selection is ephemeral — there is no
+// persistence. The host attaches the payload to its next Fi prompt.
+
+export type FiInspectTargetPayload = {
+  fiId: string;
+  datasetKey?: string | null;
+  description?: string | null;
+  datum?: unknown;
+  rect: { x: number; y: number; width: number; height: number };
+  textPreview?: string | null;
+  sourceLoc?: string | null;
+};
+
+type FiInspectableEntry = {
+  id: string;
+  fiId: string;
+  datasetKey: string | null;
+  description: string | null;
+  sourceLoc: string | null;
+  getDatum: () => unknown;
+  node: HTMLElement;
+};
+
+type FiInspectRegistry = {
+  register: (entry: FiInspectableEntry) => () => void;
+  // Returns the deepest registered inspectable at viewport (clientX, clientY).
+  pick: (clientX: number, clientY: number) => FiInspectableEntry | null;
+};
+
+const FiInspectContext = React.createContext<FiInspectRegistry | null>(null);
+
+export function FiInspectProvider(props: { children: React.ReactNode }) {
+  const entriesRef = React.useRef<Map<string, FiInspectableEntry>>(new Map());
+
+  const registry = useMemo<FiInspectRegistry>(() => ({
+    register(entry) {
+      entriesRef.current.set(entry.id, entry);
+      return () => {
+        entriesRef.current.delete(entry.id);
+      };
+    },
+    pick(clientX, clientY) {
+      // Walk the DOM stack at the cursor; the topmost element belonging to
+      // a registered inspectable wins. We iterate elementsFromPoint() so a
+      // chart card containing a smaller "datapoint" inspectable will yield
+      // the datapoint, not the card.
+      const stack = typeof document.elementsFromPoint === "function"
+        ? document.elementsFromPoint(clientX, clientY)
+        : [];
+      const reverseLookup = new Map<HTMLElement, FiInspectableEntry>();
+      for (const entry of entriesRef.current.values()) {
+        reverseLookup.set(entry.node, entry);
+      }
+      for (const el of stack) {
+        if (!(el instanceof HTMLElement)) continue;
+        // Walk up from this element to the document — first ancestor that
+        // is a registered inspectable wins. This way an unregistered child
+        // element still resolves to the nearest registered ancestor.
+        let cur: HTMLElement | null = el;
+        while (cur) {
+          const hit = reverseLookup.get(cur);
+          if (hit) return hit;
+          cur = cur.parentElement;
+        }
+      }
+      return null;
+    },
+  }), []);
+
+  return (
+    <FiInspectContext.Provider value={registry}>
+      {props.children}
+      <InspectOverlay registry={registry} />
+    </FiInspectContext.Provider>
+  );
+}
+
+export function useFiInspect(): FiInspectRegistry | null {
+  return React.useContext(FiInspectContext);
+}
+
+export function FiInspectable(props: {
+  fiId: string;
+  datum?: unknown;
+  datasetKey?: string;
+  description?: string;
+  sourceLoc?: string;
+  className?: string;
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+  /** Render as an inline span instead of a block div. */
+  inline?: boolean;
+}) {
+  const registry = React.useContext(FiInspectContext);
+  const nodeRef = React.useRef<HTMLElement | null>(null);
+  // Snapshot datum in a ref so the overlay reads the latest value at click
+  // time without re-registering on every render.
+  const datumRef = React.useRef(props.datum);
+  React.useEffect(() => { datumRef.current = props.datum; }, [props.datum]);
+
+  React.useEffect(() => {
+    if (!registry || !nodeRef.current) return;
+    const id = `${props.fiId}::${Math.random().toString(36).slice(2, 10)}`;
+    const unregister = registry.register({
+      id,
+      fiId: props.fiId,
+      datasetKey: props.datasetKey ?? null,
+      description: props.description ?? null,
+      sourceLoc: props.sourceLoc ?? null,
+      getDatum: () => datumRef.current,
+      node: nodeRef.current,
+    });
+    return unregister;
+  }, [registry, props.fiId, props.datasetKey, props.description, props.sourceLoc]);
+
+  const setRef = React.useCallback((el: HTMLElement | null) => {
+    nodeRef.current = el;
+  }, []);
+
+  const dataAttrs = {
+    "data-fi-id": props.fiId,
+    "data-fi-dataset": props.datasetKey ?? undefined,
+  };
+  if (props.inline) {
+    return (
+      <span ref={setRef} className={props.className} style={props.style} {...dataAttrs}>
+        {props.children}
+      </span>
+    );
+  }
+  return (
+    <div ref={setRef} className={props.className} style={props.style} {...dataAttrs}>
+      {props.children}
+    </div>
+  );
+}
+
+function InspectOverlay({ registry }: { registry: FiInspectRegistry }) {
+  const [active, setActive] = useState(false);
+  const [hover, setHover] = useState<{ x: number; y: number; w: number; h: number; label: string } | null>(null);
+  const activeRef = React.useRef(active);
+  React.useEffect(() => { activeRef.current = active; }, [active]);
+
+  React.useEffect(() => {
+    function onEnter() { setActive(true); }
+    function onExit() { setActive(false); setHover(null); }
+    window.addEventListener("definite:inspect-mode-enter", onEnter);
+    window.addEventListener("definite:inspect-mode-exit", onExit);
+    return () => {
+      window.removeEventListener("definite:inspect-mode-enter", onEnter);
+      window.removeEventListener("definite:inspect-mode-exit", onExit);
+    };
+  }, []);
+
+  // Keep the cursor class in sync with React's inspect state so a click-to-pick
+  // (which exits locally) doesn't leave a stale crosshair if the parent never
+  // echoes back an exit message.
+  React.useEffect(() => {
+    const root = document.documentElement;
+    if (active) root.classList.add("definite-inspecting");
+    else root.classList.remove("definite-inspecting");
+    return () => { root.classList.remove("definite-inspecting"); };
+  }, [active]);
+
+  React.useEffect(() => {
+    if (!active) return;
+
+    function onMove(e: MouseEvent) {
+      const hit = registry.pick(e.clientX, e.clientY);
+      if (!hit) {
+        setHover(null);
+        return;
+      }
+      const r = hit.node.getBoundingClientRect();
+      setHover({
+        x: r.x, y: r.y, w: r.width, h: r.height,
+        label: hit.fiId + (hit.datasetKey ? ` · ${hit.datasetKey}` : ""),
+      });
+    }
+
+    function onClick(e: MouseEvent) {
+      const hit = registry.pick(e.clientX, e.clientY);
+      if (!hit) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const r = hit.node.getBoundingClientRect();
+      const textPreview = (hit.node.textContent ?? "").trim().slice(0, 200);
+      const payload: FiInspectTargetPayload = {
+        fiId: hit.fiId,
+        datasetKey: hit.datasetKey,
+        description: hit.description,
+        sourceLoc: hit.sourceLoc,
+        datum: hit.getDatum(),
+        rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+        textPreview: textPreview.length ? textPreview : null,
+      };
+      try {
+        window.parent?.postMessage({ type: "definite:inspect-target", payload }, "*");
+      }
+      catch {
+        // Non-iframe context (preview / standalone) — surface via custom event.
+        window.dispatchEvent(new CustomEvent("definite:inspect-target", { detail: payload }));
+      }
+      // Auto-exit after a pick. Parent can re-enter for another selection.
+      setActive(false);
+      setHover(null);
+    }
+
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setActive(false);
+        setHover(null);
+        try {
+          window.parent?.postMessage({ type: "definite:inspect-cancelled" }, "*");
+        }
+        catch {/* ignore */}
+      }
+    }
+
+    document.addEventListener("mousemove", onMove, true);
+    document.addEventListener("click", onClick, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("click", onClick, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [active, registry]);
+
+  if (!active) return null;
+
+  return (
+    <>
+      {/* Crosshair cursor + non-blocking dimmer. We don't intercept clicks
+          via a top-level layer because that breaks elementsFromPoint hits;
+          instead the document-level capture-phase handlers above take over. */}
+      <style>{`html.definite-inspecting, html.definite-inspecting * { cursor: crosshair !important; }`}</style>
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          pointerEvents: "none",
+          zIndex: 2147483646,
+          background: "rgba(8, 12, 24, 0.04)",
+        }}
+      />
+      {hover && (
+        <div
+          style={{
+            position: "fixed",
+            left: hover.x,
+            top: hover.y,
+            width: hover.w,
+            height: hover.h,
+            pointerEvents: "none",
+            border: "2px solid #6366f1",
+            borderRadius: 6,
+            background: "rgba(99, 102, 241, 0.12)",
+            boxShadow: "0 0 0 1px rgba(255,255,255,0.6) inset",
+            zIndex: 2147483647,
+            transition: "left 60ms linear, top 60ms linear, width 60ms linear, height 60ms linear",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              top: -22,
+              padding: "2px 6px",
+              fontSize: 11,
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+              color: "#fff",
+              background: "#6366f1",
+              borderRadius: 4,
+              whiteSpace: "nowrap",
+              maxWidth: "60vw",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {hover.label}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 type DrillContextValue = {
   open: (e: DrillEntity) => void;
   close: () => void;
@@ -4487,8 +4783,10 @@ export function DrillProvider(props: {
   );
   return (
     <DrillContext.Provider value={ctx}>
-      {props.children}
-      <DrillDrawer entity={entity} onClose={ctx.close} aiChat={props.aiChat} />
+      <FiInspectProvider>
+        {props.children}
+        <DrillDrawer entity={entity} onClose={ctx.close} aiChat={props.aiChat} />
+      </FiInspectProvider>
     </DrillContext.Provider>
   );
 }
