@@ -8,6 +8,7 @@ import {
   type DateRangeValue,
   DrillProvider,
   ErrorState,
+  FiInspectable,
   LoadingState,
   PaletteProvider,
   SaasKpiCard,
@@ -154,22 +155,31 @@ function OverviewView({ rowCount, loading }: { rowCount: number; loading: boolea
   const drill = useDrill();
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-      <SaasKpiCard
-        title="Total rows"
-        value={rowCount.toLocaleString()}
-        sub="in dataset"
-        loading={loading}
-        onClick={() => drill.open({
-          kind: "kpi",
-          id: "rows",
-          title: "Total rows",
-          value: rowCount.toLocaleString(),
-          breadcrumb: "Overview",
-          stats: [["Row count", rowCount.toLocaleString()]],
-          narrative: "Dataset row count. Replace with your own computed stats.",
-          sql: `SELECT COUNT(*) FROM main;`,
-        })}
-      />
+      {/* Wrap each tile in <FiInspectable> so the host can pick it as Fi context.
+          `fiId` should be stable across renders; pass `datum` for richer prompts. */}
+      <FiInspectable
+        fiId="kpi-total-rows"
+        datasetKey="main"
+        description="Total row count KPI"
+        datum={{ rowCount }}
+      >
+        <SaasKpiCard
+          title="Total rows"
+          value={rowCount.toLocaleString()}
+          sub="in dataset"
+          loading={loading}
+          onClick={() => drill.open({
+            kind: "kpi",
+            id: "rows",
+            title: "Total rows",
+            value: rowCount.toLocaleString(),
+            breadcrumb: "Overview",
+            stats: [["Row count", rowCount.toLocaleString()]],
+            narrative: "Dataset row count. Replace with your own computed stats.",
+            sql: `SELECT COUNT(*) FROM main;`,
+          })}
+        />
+      </FiInspectable>
     </div>
   );
 }
