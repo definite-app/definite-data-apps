@@ -764,11 +764,70 @@ async function fetchJson(url: string): Promise<unknown> {
   return normalizeRows(await response.json());
 }
 
+function quoteIdentifier(name: string): string {
+  return `"${name.replace(/"/g, "\"\"")}"`;
+}
+
+function findHugeIntColumns(result: any): string[] {
+  const fields = result?.schema?.fields;
+  if (!Array.isArray(fields)) {
+    return [];
+  }
+  const names: string[] = [];
+  for (const field of fields) {
+    const type = field?.type;
+    if (!type || typeof field.name !== "string") {
+      continue;
+    }
+    // Apache Arrow JS: Type.Int === 2. DuckDB's HUGEINT / UHUGEINT both arrive as
+    // 128-bit Int. Detect by typeId or constructor name to be resilient across
+    // Arrow JS minor versions.
+    const isInt = type.typeId === 2 || type.constructor?.name === "Int";
+    const bitWidth = typeof type.bitWidth === "number" ? type.bitWidth : null;
+    if (isInt && bitWidth === 128) {
+      names.push(field.name);
+    }
+  }
+  return names;
+}
+
+function arrowRowsToObjects(result: any): Array<Record<string, unknown>> {
+  return result.toArray().map((row: { toJSON?: () => Record<string, unknown> }) => row.toJSON?.() ?? row);
+}
+
 async function queryRows(conn: any, sql: string): Promise<Array<Record<string, unknown>>> {
   const result = await conn.query(sql);
-  return normalizeRows(
-    result.toArray().map((row: { toJSON?: () => Record<string, unknown> }) => row.toJSON?.() ?? row),
-  );
+  const hugeIntColumns = findHugeIntColumns(result);
+  if (hugeIntColumns.length === 0) {
+    return normalizeRows(arrowRowsToObjects(result));
+  }
+
+  // DuckDB WASM 1.29.0's Arrow row.toJSON() silently returns 0 for HUGEINT / UHUGEINT
+  // values (no error, no warning). Re-issue the query with affected columns cast to
+  // DOUBLE so they round-trip into JS numbers. Loses precision above 2^53; acceptable
+  // for typical aggregate cases (counts, summed currency amounts).
+  const hugeIntSet = new Set(hugeIntColumns);
+  const projections = (result.schema.fields as Array<{ name: string }>).map((field) => {
+    const quoted = quoteIdentifier(field.name);
+    return hugeIntSet.has(field.name) ? `${quoted}::DOUBLE AS ${quoted}` : quoted;
+  });
+  const wrappedSql = `SELECT ${projections.join(", ")} FROM (${sql})`;
+
+  try {
+    const wrappedResult = await conn.query(wrappedSql);
+    return normalizeRows(arrowRowsToObjects(wrappedResult));
+  }
+  catch (error) {
+    emitUnknownRuntimeError(error, {
+      code: "SQL_QUERY_HUGEINT_CAST_FALLBACK",
+      severity: "warning",
+      phase: "duckdb",
+      component: "queryRows",
+      message: "Failed to cast HUGEINT columns to DOUBLE; affected values may be returned as 0.",
+      details: { sql, wrappedSql, columns: hugeIntColumns },
+    });
+    return normalizeRows(arrowRowsToObjects(result));
+  }
 }
 
 async function getTableRowCount(conn: any, tableRef: string | null): Promise<number | null> {
