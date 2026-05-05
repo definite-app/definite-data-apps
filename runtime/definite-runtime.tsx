@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
+import { SourceMapConsumer, type RawSourceMap } from "source-map-js";
+
 type DataAppMode = "auto" | "live" | "snapshot";
 type PerspectiveTheme = "light" | "dark";
 type DatasetKind = "table" | "database";
@@ -64,6 +66,15 @@ type DataAppRuntimeError = {
   component?: string | null;
   requestId?: string | null;
   details?: Record<string, unknown> | null;
+};
+
+export type ResolvedStackFrame = {
+  source: string | null;
+  line: number | null;
+  column: number | null;
+  name: string | null;
+  /** Original frame text (browser-formatted), preserved as a fallback when resolution fails. */
+  raw: string;
 };
 
 type DefiniteBridge = {
@@ -266,12 +277,121 @@ function emitUnknownRuntimeError(
   error: unknown,
   context: Omit<DataAppRuntimeError, "message"> & { message?: string },
 ) {
+  const stack = error instanceof Error && typeof error.stack === "string" ? error.stack : null;
+  const resolvedStack = stack ? resolveStack(stack) : null;
+  const baseDetails = context.details ?? {};
+  const details: Record<string, unknown> = { ...baseDetails };
+  if (stack) details.stack = stack;
+  if (resolvedStack) details.resolvedStack = resolvedStack;
+
   emitRuntimeError({
     ...context,
     message: context.message ?? (error instanceof Error ? error.message : String(error)),
-    details: context.details ?? null,
+    details: Object.keys(details).length > 0 ? details : null,
   });
 }
+
+// =============================================================================
+// Stack frame resolution via inline source map
+// =============================================================================
+// The data-app bundle ships with esbuild's inline source map. Parsing it lets
+// us rewrite browser stack frames (which point inside the bundle) to original
+// App.tsx positions before the error reaches the host. This is the difference
+// between the agent seeing "component=window" and seeing
+// "src/App.tsx:215:42 in OverviewView" — the latter is something the agent
+// can Read and Edit directly.
+//
+// The wax dataBridge.ts reads `window.__DEFINITE_RESOLVE_STACK` from inside
+// the iframe and uses it to enrich uncaught errors before postMessage. Both
+// scripts live in the same iframe so window globals are shared.
+
+let sourceMapConsumer: SourceMapConsumer | null | undefined = undefined;
+
+function getSourceMapConsumer(): SourceMapConsumer | null {
+  if (sourceMapConsumer !== undefined) return sourceMapConsumer;
+
+  const SOURCE_MAP_RE = /\/\/# sourceMappingURL=data:application\/json[^,]*;base64,([A-Za-z0-9+/=]+)/;
+  try {
+    const scripts = Array.from(document.querySelectorAll("script[type='module']"));
+    for (const script of scripts) {
+      const text = script.textContent ?? "";
+      const m = SOURCE_MAP_RE.exec(text);
+      if (!m) continue;
+      const json = JSON.parse(atob(m[1])) as RawSourceMap;
+      sourceMapConsumer = new SourceMapConsumer(json);
+      return sourceMapConsumer;
+    }
+  }
+  catch {
+    // Source map missing or malformed — give up cleanly; callers fall back to raw frames.
+  }
+
+  sourceMapConsumer = null;
+  return sourceMapConsumer;
+}
+
+// Browser-specific frame formats:
+//   Chrome/Edge: "    at OverviewView (https://app.definite.app/docs/x:1234:56)"
+//                "    at https://app.definite.app/docs/x:1234:56"   (anonymous)
+//   Firefox/Safari: "OverviewView@https://app.definite.app/docs/x:1234:56"
+const CHROME_FRAME_RE = /^\s*at\s+(?:(.+?)\s+\()?([^()\s]+):(\d+):(\d+)\)?\s*$/;
+const FIREFOX_FRAME_RE = /^(.+?)@(.+?):(\d+):(\d+)\s*$/;
+
+type RawFrame = { name: string | null; line: number; column: number; raw: string };
+
+function parseStackFrames(stack: string): Array<RawFrame> {
+  const out: Array<RawFrame> = [];
+  for (const line of stack.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("Error")) continue;
+    const chrome = CHROME_FRAME_RE.exec(line);
+    if (chrome) {
+      out.push({ name: chrome[1] ?? null, line: parseInt(chrome[3], 10), column: parseInt(chrome[4], 10), raw: trimmed });
+      continue;
+    }
+    const firefox = FIREFOX_FRAME_RE.exec(line);
+    if (firefox) {
+      out.push({ name: firefox[1] || null, line: parseInt(firefox[3], 10), column: parseInt(firefox[4], 10), raw: trimmed });
+    }
+  }
+  return out;
+}
+
+export function resolveStack(stack: string): Array<ResolvedStackFrame> | null {
+  const consumer = getSourceMapConsumer();
+  if (!consumer) return null;
+
+  const raw = parseStackFrames(stack);
+  if (raw.length === 0) return null;
+
+  return raw.map((frame) => {
+    try {
+      const pos = consumer.originalPositionFor({ line: frame.line, column: frame.column });
+      return {
+        source: pos.source ?? null,
+        line: pos.line ?? null,
+        column: pos.column ?? null,
+        name: pos.name ?? frame.name,
+        raw: frame.raw,
+      };
+    }
+    catch {
+      return { source: null, line: null, column: null, name: frame.name, raw: frame.raw };
+    }
+  });
+}
+
+declare global {
+  interface Window {
+    __DEFINITE_RESOLVE_STACK?: (stack: string) => Array<ResolvedStackFrame> | null;
+  }
+}
+
+// Expose for wax's dataBridge.ts to call when window.error/unhandledrejection
+// fire. Defined unconditionally — dataBridge falls back to raw stack if it's
+// undefined (e.g., the runtime hasn't loaded yet, or an error fires before
+// this module executes).
+window.__DEFINITE_RESOLVE_STACK = resolveStack;
 
 function hashKey(value: string): string {
   let hash = 0;
